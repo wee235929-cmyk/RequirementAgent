@@ -6,12 +6,16 @@ import tempfile
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 sys.path.insert(0, str(Path(__file__).parent))
 from src.config import USER_ROLES, DEFAULT_ROLE, SUPPORTED_FILE_TYPES, APP_TITLE
-from src.agents.orchestrator import OrchestratorAgent
+from src.agents.orchestrator import OrchestratorAgent, DEV_MODE
 from src.modules.requirements_generator import RequirementsGenerator
 from src.modules.roles import select_role_prompt
+
+# LangSmith tracing URL
+LANGSMITH_PROJECT_URL = "https://smith.langchain.com/o/raaa/projects/p/RAAA"
 
 
 # =============================================================================
@@ -28,6 +32,7 @@ SESSION_DEFAULTS = {
     "srs_markdown": None,
     "indexed_files": set(),
     "indexing_status": None,
+    "last_chain_of_thought": [],
 }
 
 
@@ -150,6 +155,36 @@ def generate_srs(focus_input: str):
 
 
 # =============================================================================
+# Mermaid Diagram Rendering
+# =============================================================================
+
+def render_mermaid(mermaid_code: str):
+    """Render a Mermaid diagram using HTML/JS component."""
+    # Extract code from markdown code block if present
+    code = mermaid_code
+    if "```mermaid" in code:
+        code = code.replace("```mermaid", "").replace("```", "").strip()
+    
+    html_content = f"""
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({{startOnLoad:true, theme:'default'}});</script>
+    <div class="mermaid">
+    {code}
+    </div>
+    """
+    components.html(html_content, height=400, scrolling=True)
+
+
+def display_chain_of_thought(chain_of_thought: list):
+    """Display chain of thought in dev mode."""
+    if DEV_MODE and chain_of_thought:
+        with st.expander("🧠 Chain of Thought (Dev Mode)", expanded=False):
+            for thought in chain_of_thought:
+                st.text(thought)
+            st.markdown(f"[View in LangSmith]({LANGSMITH_PROJECT_URL})")
+
+
+# =============================================================================
 # Chat Processing Functions
 # =============================================================================
 
@@ -195,6 +230,10 @@ def _handle_deep_research(prompt: str):
         st.markdown(result["response"])
         st.session_state.messages.append({"role": "assistant", "content": result["response"]})
         
+        # Display chain of thought in dev mode
+        display_chain_of_thought(result.get("chain_of_thought", []))
+        st.session_state.last_chain_of_thought = result.get("chain_of_thought", [])
+        
         pdf_path = result.get("pdf_path")
         if pdf_path and os.path.exists(pdf_path):
             with open(pdf_path, "rb") as pdf_file:
@@ -215,8 +254,19 @@ def _handle_standard_processing(prompt: str):
             role=st.session_state.selected_role,
             uploaded_files=st.session_state.uploaded_files
         )
+        
         st.markdown(result["response"])
         st.session_state.messages.append({"role": "assistant", "content": result["response"]})
+        
+        # Display chain of thought in dev mode
+        display_chain_of_thought(result.get("chain_of_thought", []))
+        st.session_state.last_chain_of_thought = result.get("chain_of_thought", [])
+        
+        # Render Mermaid diagram if present
+        mermaid_chart = result.get("mermaid_chart", "")
+        if mermaid_chart:
+            st.subheader("📊 Generated Diagram")
+            render_mermaid(mermaid_chart)
 
 
 # =============================================================================
@@ -359,6 +409,13 @@ def _render_tips():
     st.caption("- Ask questions about uploaded documents")
     st.caption("- Request requirements generation")
     st.caption("- Use Deep Research for domain exploration")
+    st.caption("- Ask for 'diagram' or 'chart' to visualize requirements")
+    
+    # Dev mode indicator
+    if DEV_MODE:
+        st.divider()
+        st.caption("🔧 **Dev Mode Active**")
+        st.caption(f"[LangSmith Traces]({LANGSMITH_PROJECT_URL})")
 
 
 # =============================================================================

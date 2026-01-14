@@ -18,6 +18,7 @@ from src.utils import get_logger, setup_logging
 from src.utils.exceptions import RAAAError, ConfigurationError, ParsingError
 from src.rag import DocumentParser, RAGIndexer, AgenticRAGChain, create_rag_system
 from src.modules.research import PlannerAgent, SearcherAgent, WriterAgent, PDFReportGenerator
+from src.tools.chart import MermaidChartTool, should_generate_chart, should_auto_generate_diagram
 
 def test_utils_module():
     """Test utils module (logging and exceptions)."""
@@ -94,6 +95,59 @@ def test_research_module():
     print(f"✓ PDFReportGenerator created")
     
     print("\n✓ Research module tests passed\n")
+
+
+def test_chart_tool():
+    """Test Mermaid chart generation tool."""
+    print("=" * 60)
+    print("Testing Chart Tool")
+    print("=" * 60)
+    
+    print("\n1. Testing MermaidChartTool initialization...")
+    chart_tool = MermaidChartTool()
+    print(f"✓ MermaidChartTool created")
+    
+    print("\n2. Testing should_generate_chart detection...")
+    test_cases = [
+        ("Generate a sequence diagram for login", True),
+        ("Show me a flowchart", True),
+        ("I need requirements for authentication", False),
+        ("Create a class diagram", True),
+        ("What is the weather?", False),
+        ("我需要一个流程图", True),  # Chinese: I need a flowchart
+    ]
+    for text, expected in test_cases:
+        result = should_generate_chart(text)
+        status = "✓" if result == expected else "✗"
+        print(f"  {status} '{text[:40]}' -> {result} (expected {expected})")
+    
+    print("\n3. Testing diagram type detection...")
+    test_types = [
+        ("sequence diagram", "sequence"),
+        ("flowchart process", "flowchart"),
+        ("workflow diagram", "flowchart"),
+        ("class structure", "class"),
+        ("entity relationship", "er"),
+        ("流程图", "flowchart"),  # Chinese: flowchart
+    ]
+    for text, expected in test_types:
+        result = chart_tool.detect_diagram_type(text)
+        status = "✓" if result == expected else "✗"
+        print(f"  {status} '{text}' -> {result} (expected {expected})")
+    
+    print("\n4. Testing should_auto_generate_diagram...")
+    auto_test_cases = [
+        ("Step 1: User logs in. Step 2: User selects product.", True, "sequence"),
+        ("If the user is authenticated, show dashboard. Else redirect to login.", True, "flowchart"),
+        ("The User entity has fields: id, name, email.", True, "er"),
+        ("Simple text without any patterns.", False, ""),
+    ]
+    for text, expected_gen, expected_type in auto_test_cases:
+        result_gen, result_type = should_auto_generate_diagram(text)
+        status = "✓" if result_gen == expected_gen else "✗"
+        print(f"  {status} Auto-detect: {result_gen} (expected {expected_gen}), type: {result_type}")
+    
+    print("\n✓ Chart tool tests passed\n")
 
 
 def test_role_prompts():
@@ -257,6 +311,7 @@ if __name__ == "__main__":
         test_utils_module()
         test_rag_module()
         test_research_module()
+        test_chart_tool()
         
         # Test existing modules
         test_role_prompts()
