@@ -2,10 +2,11 @@
 RAG Indexer module with FAISS vector storage and GraphRAG integration.
 """
 import sys
+import re
 import json
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -24,6 +25,7 @@ logger = get_logger(__name__)
 class RAGIndexer:
     """
     RAG Indexer with FAISS vector storage and optional GraphRAG integration.
+    Supports file deduplication by filename+size and JSON import/export.
     """
     
     def __init__(
@@ -60,6 +62,7 @@ class RAGIndexer:
         
         self.graphrag_available = False
         self.graph_index = None
+        self._graph_doc_count = 0
         
         self._load_index()
     
@@ -91,6 +94,7 @@ class RAGIndexer:
         """Load existing FAISS index if available."""
         faiss_path = self.index_path / "faiss_index"
         metadata_path = self.index_path / "metadata.json"
+        documents_path = self.index_path / "documents.json"
         
         try:
             if faiss_path.exists() and self.embeddings:
@@ -105,11 +109,28 @@ class RAGIndexer:
                 with open(metadata_path, 'r') as f:
                     self.indexed_files = json.load(f)
                 logger.info(f"Loaded metadata for {len(self.indexed_files)} indexed files")
+            
+            if documents_path.exists():
+                with open(documents_path, 'r', encoding='utf-8') as f:
+                    docs_data = json.load(f)
+                self.documents = [
+                    Document(page_content=d["content"], metadata=d["metadata"])
+                    for d in docs_data
+                ]
+                logger.info(f"Loaded {len(self.documents)} document chunks for keyword search")
+            
+            graph_path = self.index_path / "graph_index.json"
+            if graph_path.exists():
+                with open(graph_path, 'r') as f:
+                    self.graph_index = json.load(f)
+                self.graphrag_available = True
+                self._graph_doc_count = self.graph_index.get("document_count", 0)
+                logger.info(f"Loaded graph index with {len(self.graph_index.get('entities', []))} entities")
         except Exception as e:
             logger.warning(f"Failed to load existing index: {e}")
     
     def _save_index(self):
-        """Save FAISS index and metadata to disk."""
+        """Save FAISS index, metadata, and documents to disk."""
         try:
             if self.vectorstore:
                 faiss_path = self.index_path / "faiss_index"
@@ -120,12 +141,36 @@ class RAGIndexer:
             with open(metadata_path, 'w') as f:
                 json.dump(self.indexed_files, f, indent=2, default=str)
             logger.info(f"Saved metadata for {len(self.indexed_files)} files")
+            
+            if self.documents:
+                documents_path = self.index_path / "documents.json"
+                docs_data = [
+                    {"content": doc.page_content, "metadata": doc.metadata}
+                    for doc in self.documents
+                ]
+                with open(documents_path, 'w', encoding='utf-8') as f:
+                    json.dump(docs_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"Saved {len(self.documents)} document chunks")
         except Exception as e:
             logger.error(f"Failed to save index: {e}")
+    
+    def _get_file_key(self, filename: str, file_size: int) -> str:
+        """Generate a unique key for file deduplication based on filename and size."""
+        return f"{filename}::{file_size}"
+    
+    def _is_file_indexed(self, filename: str, file_size: int) -> bool:
+        """Check if a file with the same name and size is already indexed."""
+        file_key = self._get_file_key(filename, file_size)
+        for path, meta in self.indexed_files.items():
+            existing_key = self._get_file_key(meta.get("filename", ""), meta.get("file_size", 0))
+            if existing_key == file_key:
+                return True
+        return False
     
     def index_documents(self, file_paths: List[str], progress_callback=None) -> Dict[str, Any]:
         """
         Index multiple documents with incremental updates.
+        Deduplicates files by filename + file size.
         
         Args:
             file_paths: List of file paths to index
@@ -145,14 +190,20 @@ class RAGIndexer:
         
         for i, file_path in enumerate(file_paths):
             file_path = str(file_path)
-            filename = Path(file_path).name
+            path_obj = Path(file_path)
+            filename = path_obj.name
             
             if progress_callback:
                 progress_callback(f"Processing {filename}... ({i+1}/{len(file_paths)})")
             
-            if file_path in self.indexed_files:
+            try:
+                file_size = path_obj.stat().st_size
+            except Exception:
+                file_size = 0
+            
+            if self._is_file_indexed(filename, file_size):
                 results["skipped"].append(filename)
-                logger.info(f"Skipping already indexed file: {filename}")
+                logger.info(f"Skipping duplicate file (same name+size): {filename}")
                 continue
             
             try:
@@ -174,6 +225,7 @@ class RAGIndexer:
                 
                 self.indexed_files[file_path] = {
                     "filename": filename,
+                    "file_size": file_size,
                     "chunks": len(chunks),
                     "parser": metadata.get("parser", "unknown"),
                     "tables_count": len(metadata.get("tables", [])),
@@ -209,10 +261,15 @@ class RAGIndexer:
         
         return results
     
-    def build_graph_index(self, progress_callback=None) -> bool:
+    def build_graph_index(self, progress_callback=None, force_rebuild: bool = False) -> bool:
         """
-        Build GraphRAG knowledge graph from indexed documents.
+        Build or update GraphRAG knowledge graph from indexed documents.
+        Supports incremental updates when new documents are added.
         
+        Args:
+            progress_callback: Optional callback for progress updates
+            force_rebuild: If True, rebuild from scratch; otherwise, only process new docs
+            
         Returns:
             True if successful, False otherwise
         """
@@ -226,24 +283,40 @@ class RAGIndexer:
             
             logger.info("GraphRAG integration - using simplified entity extraction")
             
-            entities = []
-            relationships = []
+            if force_rebuild or not self.graph_index:
+                entities = []
+                relationships = []
+                start_idx = 0
+            else:
+                entities = list(self.graph_index.get("entities", []))
+                relationships = list(self.graph_index.get("relationships", []))
+                start_idx = self._graph_doc_count
+            
+            if start_idx >= len(self.documents):
+                logger.info("Graph is already up to date with all documents")
+                return True
+            
+            new_docs = self.documents[start_idx:]
+            logger.info(f"Processing {len(new_docs)} new documents for graph (starting from index {start_idx})")
             
             if progress_callback:
-                progress_callback("Extracting entities from documents...")
+                progress_callback(f"Extracting entities from {len(new_docs)} new documents...")
             
             entity_prompt = ChatPromptTemplate.from_messages([
-                ("system", """Extract key entities (people, organizations, concepts, technologies, requirements) from the following text.
+                ("system", """Extract all  entities (people, organizations, concepts, technologies, requirements,Table Number,etc) from the following text. Do not lose any entity.
 Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["entity1", "relates_to", "entity2"], ...]}}"""),
                 ("human", "{text}")
             ])
             
             chain = entity_prompt | self.llm
             
-            sample_docs = self.documents[:min(10, len(self.documents))]
+            sample_docs = new_docs[:min(20, len(new_docs))]
             
-            for doc in sample_docs:
+            for i, doc in enumerate(sample_docs):
                 try:
+                    if progress_callback and i % 5 == 0:
+                        progress_callback(f"Processing document {i+1}/{len(sample_docs)}...")
+                    
                     result = chain.invoke({"text": doc.page_content[:2000]})
                     content = result.content
                     
@@ -260,16 +333,17 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
                 "relationships": relationships,
                 "document_count": len(self.documents)
             }
+            self._graph_doc_count = len(self.documents)
             
             graph_path = self.index_path / "graph_index.json"
             with open(graph_path, 'w') as f:
                 json.dump(self.graph_index, f, indent=2)
             
             self.graphrag_available = True
-            logger.info(f"✓ Graph index built: {len(entities)} entities, {len(relationships)} relationships")
+            logger.info(f"✓ Graph index updated: {len(set(entities))} entities, {len(relationships)} relationships")
             
             if progress_callback:
-                progress_callback(f"Graph built: {len(set(entities))} entities")
+                progress_callback(f"Graph updated: {len(set(entities))} entities")
             
             return True
             
@@ -277,12 +351,6 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
             logger.error(f"Failed to build graph index: {e}")
             self.graphrag_available = False
             return False
-    
-    def get_retriever(self, k: int = 5):
-        """Get FAISS retriever."""
-        if self.vectorstore:
-            return self.vectorstore.as_retriever(search_kwargs={"k": k})
-        return None
     
     def similarity_search(self, query: str, k: int = 5) -> List[Document]:
         """Perform similarity search on the vector store."""
@@ -293,13 +361,31 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
     def graph_search(self, query: str) -> Dict[str, Any]:
         """Search the knowledge graph for relevant entities and relationships."""
         if not self.graph_index:
-            return {"entities": [], "relationships": [], "context": ""}
+            return {"entities": [], "relationships": [], "context": "", "found": False}
         
         query_lower = query.lower()
-        relevant_entities = [
-            e for e in self.graph_index.get("entities", [])
-            if any(word in e.lower() for word in query_lower.split())
-        ]
+        query_words = set(query_lower.split())
+        
+        id_pattern = re.compile(r'[A-Z]{2,}-\d+', re.IGNORECASE)
+        query_ids = set(id_pattern.findall(query))
+        
+        relevant_entities: Set[str] = set()
+        
+        for entity in self.graph_index.get("entities", []):
+            entity_lower = entity.lower()
+            
+            entity_ids = set(id_pattern.findall(entity))
+            if query_ids and entity_ids:
+                if any(qid.upper() == eid.upper() for qid in query_ids for eid in entity_ids):
+                    relevant_entities.add(entity)
+                    continue
+            
+            if any(word in entity_lower for word in query_words if len(word) > 2):
+                relevant_entities.add(entity)
+                continue
+            
+            if any(word in query_lower for word in entity_lower.split() if len(word) > 2):
+                relevant_entities.add(entity)
         
         relevant_relationships = [
             r for r in self.graph_index.get("relationships", [])
@@ -308,16 +394,165 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
         
         context_parts = []
         if relevant_entities:
-            context_parts.append(f"Related entities: {', '.join(relevant_entities[:10])}")
+            context_parts.append(f"Related entities: {', '.join(list(relevant_entities)[:15])}")
         if relevant_relationships:
-            rel_strs = [f"{r[0]} {r[1]} {r[2]}" for r in relevant_relationships[:5]]
+            rel_strs = [f"{r[0]} {r[1]} {r[2]}" for r in relevant_relationships[:10]]
             context_parts.append(f"Relationships: {'; '.join(rel_strs)}")
         
         return {
-            "entities": relevant_entities[:10],
-            "relationships": relevant_relationships[:10],
-            "context": "\n".join(context_parts)
+            "entities": list(relevant_entities)[:15],
+            "relationships": relevant_relationships[:15],
+            "context": "\n".join(context_parts),
+            "found": len(relevant_entities) > 0
         }
+    
+    def keyword_search(self, query: str, k: int = 5) -> List[Document]:
+        """
+        Perform keyword-based search on documents for exact matches.
+        Useful for finding specific IDs, codes, or terms that may not match semantically.
+        """
+        if not self.documents:
+            return []
+        
+        query_lower = query.lower()
+        id_pattern = re.compile(r'[A-Z]{2,}-\d+', re.IGNORECASE)
+        query_ids = [qid.upper() for qid in id_pattern.findall(query)]
+        
+        scored_docs = []
+        for doc in self.documents:
+            content_lower = doc.page_content.lower()
+            score = 0
+            
+            if query_ids:
+                doc_ids = [did.upper() for did in id_pattern.findall(doc.page_content)]
+                for qid in query_ids:
+                    if qid in doc_ids:
+                        score += 10
+            
+            for word in query_lower.split():
+                if len(word) > 2 and word in content_lower:
+                    score += 1
+            
+            if score > 0:
+                scored_docs.append((score, doc))
+        
+        scored_docs.sort(key=lambda x: x[0], reverse=True)
+        return [doc for _, doc in scored_docs[:k]]
+    
+    def hybrid_search(self, query: str, k: int = 5, use_graph: bool = True) -> Dict[str, Any]:
+        """
+        Perform search with graph-first strategy:
+        1. If graph is available and use_graph=True, search graph first
+        2. Always perform similarity + keyword search for document retrieval
+        3. Graph provides additional context but doesn't replace document search
+        
+        Args:
+            query: Search query
+            k: Number of results per search type
+            use_graph: Whether to include graph search
+            
+        Returns:
+            Dictionary with combined results and context
+        """
+        result = {
+            "documents": [],
+            "graph_context": "",
+            "graph_entities": [],
+            "search_methods_used": []
+        }
+        
+        if use_graph and self.graphrag_available:
+            graph_result = self.graph_search(query)
+            result["graph_context"] = graph_result.get("context", "")
+            result["graph_entities"] = graph_result.get("entities", [])
+            if graph_result.get("found"):
+                result["search_methods_used"].append("graph_search")
+        
+        seen_content = set()
+        combined_docs = []
+        
+        if self.vectorstore:
+            vector_docs = self.similarity_search(query, k=k)
+            for doc in vector_docs:
+                content_hash = hash(doc.page_content[:200])
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    combined_docs.append((doc, "vector"))
+            if vector_docs:
+                result["search_methods_used"].append("vector_similarity")
+        
+        keyword_docs = self.keyword_search(query, k=k)
+        for doc in keyword_docs:
+            content_hash = hash(doc.page_content[:200])
+            if content_hash not in seen_content:
+                seen_content.add(content_hash)
+                combined_docs.append((doc, "keyword"))
+        if keyword_docs:
+            result["search_methods_used"].append("keyword_match")
+        
+        result["documents"] = [doc for doc, _ in combined_docs[:k * 2]]
+        
+        logger.info(f"Hybrid search: {len(result['documents'])} docs via {result['search_methods_used']}")
+        return result
+    
+    def graph_first_search(self, query: str, k: int = 5) -> Dict[str, Any]:
+        """
+        Graph-first search strategy:
+        1. Search graph for entities and relationships
+        2. If graph finds relevant entities, use them to enhance similarity search
+        3. If graph finds nothing, fall back to pure similarity + keyword search
+        
+        This ensures table content is always retrievable while graph provides context.
+        
+        Args:
+            query: Search query
+            k: Number of results
+            
+        Returns:
+            Dictionary with documents and graph context
+        """
+        result = {
+            "documents": [],
+            "graph_context": "",
+            "graph_entities": [],
+            "search_methods_used": [],
+            "graph_enhanced": False
+        }
+        
+        if self.graphrag_available:
+            graph_result = self.graph_search(query)
+            result["graph_context"] = graph_result.get("context", "")
+            result["graph_entities"] = graph_result.get("entities", [])
+            if graph_result.get("found"):
+                result["search_methods_used"].append("graph_search")
+                result["graph_enhanced"] = True
+        
+        seen_content = set()
+        combined_docs = []
+        
+        if self.vectorstore:
+            vector_docs = self.similarity_search(query, k=k)
+            for doc in vector_docs:
+                content_hash = hash(doc.page_content[:200])
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    combined_docs.append((doc, "vector"))
+            if vector_docs:
+                result["search_methods_used"].append("vector_similarity")
+        
+        keyword_docs = self.keyword_search(query, k=k)
+        for doc in keyword_docs:
+            content_hash = hash(doc.page_content[:200])
+            if content_hash not in seen_content:
+                seen_content.add(content_hash)
+                combined_docs.append((doc, "keyword"))
+        if keyword_docs:
+            result["search_methods_used"].append("keyword_match")
+        
+        result["documents"] = [doc for doc, _ in combined_docs[:k * 2]]
+        
+        logger.info(f"Graph-first search: {len(result['documents'])} docs, graph_enhanced={result['graph_enhanced']}, methods={result['search_methods_used']}")
+        return result
     
     def get_index_stats(self) -> Dict[str, Any]:
         """Get statistics about the current index."""
@@ -336,9 +571,140 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
         self.indexed_files = {}
         self.graph_index = None
         self.graphrag_available = False
+        self._graph_doc_count = 0
         
         if self.index_path.exists():
             shutil.rmtree(self.index_path)
             self.index_path.mkdir(exist_ok=True)
         
         logger.info("Index cleared")
+    
+    def export_index_json(self, output_path: str = None) -> str:
+        """
+        Export the current index (documents and metadata) to a JSON file.
+        This allows users to reload the parsed data without re-parsing.
+        
+        Args:
+            output_path: Optional path for the output file
+            
+        Returns:
+            Path to the exported JSON file
+        """
+        if not output_path:
+            output_path = str(self.index_path / "exported_index.json")
+        
+        export_data = {
+            "version": "1.0",
+            "indexed_files": self.indexed_files,
+            "documents": [
+                {
+                    "page_content": doc.page_content,
+                    "metadata": doc.metadata
+                }
+                for doc in self.documents
+            ],
+            "graph_index": self.graph_index
+        }
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
+        
+        logger.info(f"✓ Exported index to {output_path}")
+        return output_path
+    
+    def import_index_json(self, json_path: str, progress_callback=None) -> Dict[str, Any]:
+        """
+        Import a previously exported index JSON file.
+        This allows users to skip document parsing if they have pre-parsed data.
+        
+        Args:
+            json_path: Path to the JSON file to import
+            progress_callback: Optional callback for progress updates
+            
+        Returns:
+            Dictionary with import results
+        """
+        results = {
+            "success": False,
+            "documents_imported": 0,
+            "files_imported": 0,
+            "error": None
+        }
+        
+        try:
+            if progress_callback:
+                progress_callback("Loading JSON file...")
+            
+            with open(json_path, 'r', encoding='utf-8') as f:
+                import_data = json.load(f)
+            
+            if "documents" not in import_data:
+                results["error"] = "Invalid JSON format: missing 'documents' field"
+                return results
+            
+            if progress_callback:
+                progress_callback("Importing documents...")
+            
+            new_documents = []
+            for doc_data in import_data.get("documents", []):
+                doc = Document(
+                    page_content=doc_data.get("page_content", ""),
+                    metadata=doc_data.get("metadata", {})
+                )
+                new_documents.append(doc)
+            
+            if new_documents:
+                if progress_callback:
+                    progress_callback("Building vector index...")
+                
+                if self.vectorstore is None and self.embeddings:
+                    self.vectorstore = FAISSVectorStore.from_documents(new_documents, self.embeddings)
+                elif self.vectorstore and self.embeddings:
+                    new_vectorstore = FAISSVectorStore.from_documents(new_documents, self.embeddings)
+                    self.vectorstore.merge_from(new_vectorstore)
+                
+                self.documents.extend(new_documents)
+            
+            imported_files = import_data.get("indexed_files", {})
+            for path, meta in imported_files.items():
+                if not self._is_file_indexed(meta.get("filename", ""), meta.get("file_size", 0)):
+                    self.indexed_files[path] = meta
+            
+            if import_data.get("graph_index"):
+                if self.graph_index:
+                    existing_entities = set(self.graph_index.get("entities", []))
+                    new_entities = import_data["graph_index"].get("entities", [])
+                    self.graph_index["entities"] = list(existing_entities.union(set(new_entities)))
+                    self.graph_index["relationships"].extend(
+                        import_data["graph_index"].get("relationships", [])
+                    )
+                    self.graph_index["document_count"] = len(self.documents)
+                else:
+                    self.graph_index = import_data["graph_index"]
+                    self.graph_index["document_count"] = len(self.documents)
+                
+                self.graphrag_available = True
+                self._graph_doc_count = len(self.documents)
+            
+            self._save_index()
+            
+            results["success"] = True
+            results["documents_imported"] = len(new_documents)
+            results["files_imported"] = len(imported_files)
+            
+            logger.info(f"✓ Imported {len(new_documents)} documents from JSON")
+            
+        except json.JSONDecodeError as e:
+            results["error"] = f"Invalid JSON format: {str(e)}"
+            logger.error(f"JSON import failed: {e}")
+        except Exception as e:
+            results["error"] = str(e)
+            logger.error(f"Import failed: {e}")
+        
+        return results
+    
+    def needs_graph_update(self) -> bool:
+        """Check if the graph index needs to be updated with new documents."""
+        if not self.graph_index:
+            return len(self.documents) > 0
+        return len(self.documents) > self._graph_doc_count

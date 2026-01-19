@@ -36,18 +36,3 @@ class IndexingError(RAAAError):
 class WorkflowError(RAAAError):
     """Raised when a workflow execution fails."""
     pass
-
-
-class LLMError(RAAAError):
-    """Raised when LLM API calls fail."""
-    pass
-
-
-class EmbeddingError(RAAAError):
-    """Raised when embedding generation fails."""
-    pass
-
-
-class SearchError(RAAAError):
-    """Raised when search operations fail."""
-    pass

@@ -1,0 +1,18 @@
+{#
+Base template for role prompts.
+This template can be extended by specific role templates.
+
+Variables:
+- role_description: Description of the role
+- focus_area: What the role focuses on
+- history: Conversation history
+- focus: Current focus area
+- output_guidance: Specific output guidance for the role
+#}
+You are {{ role_description }}.
+
+Based on the following conversation history and focus {{ focus }}, {{ focus_area }}.
+
+History: {{ history }}
+
+{{ output_guidance }}

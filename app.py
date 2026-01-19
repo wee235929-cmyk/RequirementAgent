@@ -59,6 +59,7 @@ def index_documents(files):
     rag_indexer = st.session_state.orchestrator.get_rag_indexer()
     temp_dir = tempfile.mkdtemp()
     file_paths = []
+    json_files = []
     
     try:
         with st.spinner(f"Processing {len(files)} document(s)..."):
@@ -66,11 +67,23 @@ def index_documents(files):
                 temp_path = os.path.join(temp_dir, file.name)
                 with open(temp_path, 'wb') as f:
                     f.write(file.getbuffer())
-                file_paths.append(temp_path)
+                
+                if file.name.endswith('.json'):
+                    json_files.append(temp_path)
+                else:
+                    file_paths.append(temp_path)
             
-            results = rag_indexer.index_documents(file_paths)
-        
-        _handle_indexing_results(results)
+            if json_files:
+                for json_path in json_files:
+                    import_result = rag_indexer.import_index_json(json_path)
+                    if import_result["success"]:
+                        st.success(f"✅ Imported {import_result['documents_imported']} documents from {Path(json_path).name}")
+                    elif import_result.get("error"):
+                        st.warning(f"⚠️ JSON import issue: {import_result['error']}")
+            
+            if file_paths:
+                results = rag_indexer.index_documents(file_paths)
+                _handle_indexing_results(results)
         
     except Exception as e:
         st.error(f"❌ Indexing error: {str(e)}")
@@ -96,20 +109,44 @@ def _handle_indexing_results(results: dict):
         st.info(f"⏭️ Skipped {len(results['skipped'])} already indexed file(s)")
 
 
-def build_knowledge_graph():
-    """Build GraphRAG knowledge graph with progress display."""
+def build_knowledge_graph(force_rebuild: bool = False):
+    """Build or update GraphRAG knowledge graph with progress display."""
     rag_indexer = st.session_state.orchestrator.get_rag_indexer()
     
     try:
-        with st.spinner("Building knowledge graph..."):
-            success = rag_indexer.build_graph_index()
+        action = "Rebuilding" if force_rebuild else "Building/Updating"
+        with st.spinner(f"{action} knowledge graph..."):
+            success = rag_indexer.build_graph_index(force_rebuild=force_rebuild)
         
         if success:
-            st.success("✅ Knowledge graph built successfully!")
+            st.success("✅ Knowledge graph updated successfully!")
         else:
             st.warning("⚠️ Graph building completed with warnings")
     except Exception as e:
         st.error(f"❌ Graph building error: {str(e)}")
+
+
+def export_index():
+    """Export the current RAG index to a JSON file for later reuse."""
+    rag_indexer = st.session_state.orchestrator.get_rag_indexer()
+    
+    try:
+        with st.spinner("Exporting index..."):
+            export_path = rag_indexer.export_index_json()
+        
+        with open(export_path, 'r', encoding='utf-8') as f:
+            export_data = f.read()
+        
+        st.download_button(
+            label="📥 Download Exported Index",
+            data=export_data,
+            file_name="rag_index_export.json",
+            mime="application/json",
+            use_container_width=True
+        )
+        st.success("✅ Index exported! Click above to download.")
+    except Exception as e:
+        st.error(f"❌ Export error: {str(e)}")
 
 
 # =============================================================================
@@ -197,10 +234,14 @@ def process_user_message(prompt: str):
         has_files
     )
     
+    # Check if it's a mixed intent (contains '+')
+    is_mixed = st.session_state.orchestrator.is_mixed_intent(intent)
+    
     if intent == "general_chat":
         _handle_general_chat(prompt)
-    elif intent == "deep_research":
-        _handle_deep_research(prompt)
+    elif is_mixed or "deep_research" in intent:
+        # Mixed intents and deep research use non-streaming processing
+        _handle_mixed_or_research(prompt, intent)
     else:
         _handle_standard_processing(prompt)
 
@@ -218,9 +259,17 @@ def _handle_general_chat(prompt: str):
     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 
-def _handle_deep_research(prompt: str):
-    """Handle deep research with PDF report generation."""
-    with st.spinner("🔬 Conducting deep research... This may take a few minutes."):
+def _handle_mixed_or_research(prompt: str, intent: str):
+    """Handle mixed intents and deep research with progress display."""
+    # Determine spinner message based on intent
+    if '+' in intent:
+        intent_parts = intent.split('+')
+        workflow_desc = ' → '.join(intent_parts)
+        spinner_msg = f"🔄 Executing mixed intent workflow: {workflow_desc}... This may take a few minutes."
+    else:
+        spinner_msg = "🔬 Conducting deep research... This may take a few minutes."
+    
+    with st.spinner(spinner_msg):
         result = st.session_state.orchestrator.process(
             user_input=prompt,
             role=st.session_state.selected_role,
@@ -233,6 +282,12 @@ def _handle_deep_research(prompt: str):
         # Display chain of thought in dev mode
         display_chain_of_thought(result.get("chain_of_thought", []))
         st.session_state.last_chain_of_thought = result.get("chain_of_thought", [])
+        
+        # Render Mermaid diagram if present
+        mermaid_chart = result.get("mermaid_chart", "")
+        if mermaid_chart:
+            st.subheader("📊 Generated Diagram")
+            render_mermaid(mermaid_chart)
         
         pdf_path = result.get("pdf_path")
         if pdf_path and os.path.exists(pdf_path):
@@ -308,7 +363,7 @@ def _render_document_upload():
         "Upload documents for RAG Q&A",
         type=SUPPORTED_FILE_TYPES,
         accept_multiple_files=True,
-        help="Supported: PDF, Word, PPT, Excel, TXT, Images"
+        help="Supported: PDF, Word, PPT, Excel, TXT, Images, JSON (pre-parsed index)"
     )
     
     if uploaded_files:
@@ -316,7 +371,15 @@ def _render_document_upload():
         new_files = [f for f in uploaded_files if f.name not in st.session_state.indexed_files]
         
         if new_files:
-            st.info(f"📁 {len(new_files)} new file(s) ready to index")
+            json_count = sum(1 for f in new_files if f.name.endswith('.json'))
+            doc_count = len(new_files) - json_count
+            info_parts = []
+            if doc_count > 0:
+                info_parts.append(f"{doc_count} document(s)")
+            if json_count > 0:
+                info_parts.append(f"{json_count} JSON index file(s)")
+            st.info(f"📁 Ready to process: {', '.join(info_parts)}")
+            
             if st.button("🔍 Index Documents", type="primary", use_container_width=True):
                 index_documents(new_files)
         else:
@@ -343,13 +406,28 @@ def _render_index_stats():
         st.caption("📊 **RAG Index Stats:**")
         st.caption(f"- Indexed files: {index_stats['indexed_files']}")
         st.caption(f"- Total chunks: {index_stats['total_chunks']}")
-        st.caption(f"- Graph ready: {'Yes' if index_stats.get('has_graph') else 'No'}")
         
-        col_graph, col_clear = st.columns(2)
+        graph_status = "Yes" if index_stats.get('has_graph') else "No"
+        needs_update = rag_indexer.needs_graph_update()
+        if needs_update and index_stats.get('has_graph'):
+            graph_status = "Yes (needs update)"
+        st.caption(f"- Graph ready: {graph_status}")
+        
+        col_graph, col_rebuild = st.columns(2)
         with col_graph:
-            if not index_stats.get('has_graph'):
-                if st.button("🔗 Build Graph", use_container_width=True):
-                    build_knowledge_graph()
+            if not index_stats.get('has_graph') or needs_update:
+                btn_label = "🔗 Update Graph" if index_stats.get('has_graph') else "🔗 Build Graph"
+                if st.button(btn_label, use_container_width=True):
+                    build_knowledge_graph(force_rebuild=False)
+        with col_rebuild:
+            if index_stats.get('has_graph'):
+                if st.button("🔄 Rebuild Graph", use_container_width=True):
+                    build_knowledge_graph(force_rebuild=True)
+        
+        col_export, col_clear = st.columns(2)
+        with col_export:
+            if st.button("📤 Export Index", use_container_width=True):
+                export_index()
         with col_clear:
             if st.button("🗑️ Clear Index", use_container_width=True):
                 st.session_state.orchestrator.clear_rag_index()

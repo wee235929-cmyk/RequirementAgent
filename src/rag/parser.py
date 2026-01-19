@@ -71,6 +71,7 @@ class DocumentParser:
         
         tables = []
         images = []
+        table_texts = []
         
         try:
             for item, level in doc.iterate_items():
@@ -78,10 +79,15 @@ class DocumentParser:
                 if label == "table":
                     if hasattr(item, "export_to_dataframe"):
                         df = item.export_to_dataframe()
+                        csv_content = df.to_csv(index=False)
                         tables.append({
                             "data": df.to_dict(),
-                            "csv": df.to_csv(index=False)
+                            "csv": csv_content
                         })
+                        
+                        table_text = self._format_table_for_indexing(df)
+                        if table_text:
+                            table_texts.append(table_text)
                 elif label in ["figure", "picture", "image"]:
                     images.append({
                         "alt_text": getattr(item, "caption", ""),
@@ -90,12 +96,45 @@ class DocumentParser:
         except Exception as e:
             logger.warning(f"Error extracting tables/images: {e}")
         
+        if table_texts:
+            markdown_content += "\n\n--- TABLE DATA ---\n\n" + "\n\n".join(table_texts)
+        
         metadata["tables"] = tables
         metadata["images"] = images
         metadata["parser"] = "docling"
+        metadata["table_count"] = len(tables)
         
         logger.info(f"✓ Docling parsed {file_path}: {len(markdown_content)} chars, {len(tables)} tables, {len(images)} images")
         return markdown_content, metadata
+    
+    def _format_table_for_indexing(self, df) -> str:
+        """
+        Format a DataFrame table into searchable text that preserves row relationships.
+        Each row is formatted as a complete record for better retrieval.
+        """
+        try:
+            if df.empty:
+                return ""
+            
+            columns = list(df.columns)
+            rows_text = []
+            
+            for idx, row in df.iterrows():
+                row_parts = []
+                for col in columns:
+                    value = row[col]
+                    if value is not None and str(value).strip():
+                        row_parts.append(f"{col}: {value}")
+                if row_parts:
+                    rows_text.append(" | ".join(row_parts))
+            
+            if rows_text:
+                header = f"Table columns: {', '.join(columns)}"
+                return header + "\n" + "\n".join(rows_text)
+            return ""
+        except Exception as e:
+            logger.warning(f"Error formatting table: {e}")
+            return ""
     
     def _parse_with_fallback(self, file_path: Path, metadata: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         """Parse document using fallback loaders."""
@@ -127,14 +166,40 @@ class DocumentParser:
         return content, metadata
     
     def _parse_pdf_fallback(self, file_path: Path) -> str:
-        """Parse PDF using pypdf."""
+        """Parse PDF using pypdf with improved table detection."""
         from pypdf import PdfReader
         reader = PdfReader(str(file_path))
         text_parts = []
         for i, page in enumerate(reader.pages):
             text = page.extract_text() or ""
-            text_parts.append(f"[Page {i+1}]\n{text}")
+            processed_text = self._process_pdf_text_for_tables(text)
+            text_parts.append(f"[Page {i+1}]\n{processed_text}")
         return "\n\n".join(text_parts)
+    
+    def _process_pdf_text_for_tables(self, text: str) -> str:
+        """
+        Process PDF text to better preserve table-like structures.
+        Identifies rows that look like table data and formats them for better indexing.
+        """
+        import re
+        
+        lines = text.split('\n')
+        processed_lines = []
+        
+        id_pattern = re.compile(r'^([A-Z]{2,}-\d+)')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            id_match = id_pattern.match(line)
+            if id_match:
+                processed_lines.append(f"[ID: {id_match.group(1)}] {line}")
+            else:
+                processed_lines.append(line)
+        
+        return '\n'.join(processed_lines)
     
     def _parse_word_fallback(self, file_path: Path) -> str:
         """Parse Word document using python-docx."""

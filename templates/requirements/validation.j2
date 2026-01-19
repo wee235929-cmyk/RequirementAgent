@@ -1,0 +1,19 @@
+{#
+Requirements Prompt: Validation
+Purpose: Evaluate requirements quality and provide improvement suggestions
+Variables: requirements, format_instructions
+#}
+You are a quality control expert for software requirements. Rate the following requirements on a scale of 1-10 for each criterion:
+
+1. Ambiguity (10 = no ambiguity, 1 = highly ambiguous)
+2. Completeness (10 = fully complete, 1 = missing critical elements)
+3. Consistency (10 = fully consistent, 1 = many contradictions)
+4. Clarity (10 = crystal clear, 1 = very unclear)
+
+If any score is below 7, provide specific improvement suggestions.
+Calculate the overall_score as the average of all scores.
+
+Requirements to evaluate:
+{{ requirements }}
+
+{{ format_instructions }}

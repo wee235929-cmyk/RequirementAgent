@@ -11,7 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langsmith import traceable
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import LLM_CONFIG, SYSTEM_PROMPTS, VALID_INTENTS
+from config import LLM_CONFIG, SYSTEM_PROMPTS, VALID_INTENTS, VALID_MIXED_INTENTS, ALL_VALID_INTENTS
 from modules.roles import select_role_prompt
 from modules.memory import EnhancedConversationMemory
 from rag import RAGIndexer, AgenticRAGChain, create_rag_system
@@ -45,6 +45,11 @@ class AgentState(TypedDict):
     pdf_path: str
     chain_of_thought: List[str]
     mermaid_chart: str
+    # Mixed intent support
+    is_mixed_intent: bool
+    intent_sequence: List[str]  # Ordered list of intents to execute
+    current_intent_index: int   # Current position in intent_sequence
+    intermediate_results: Dict[str, Any]  # Results from previous steps in chain
 
 class OrchestratorAgent:
     def __init__(self, memory: Optional[EnhancedConversationMemory] = None, rag_indexer: Optional[RAGIndexer] = None):
@@ -70,6 +75,12 @@ class OrchestratorAgent:
             ("human", "User role: {role}\nUser input: {user_input}\nHas uploaded files: {has_files}")
         ])
         
+        # Mixed intent detection prompt
+        self.mixed_intent_detection_prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPTS["mixed_intent_detection"]),
+            ("human", "User role: {role}\nUser input: {user_input}\nHas uploaded files: {has_files}")
+        ])
+        
         self.general_chat_prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPTS["general_chat"]),
             ("human", "{user_input}")
@@ -85,6 +96,8 @@ class OrchestratorAgent:
         workflow.add_node("rag_qa", self._rag_qa_node)
         workflow.add_node("deep_research", self._deep_research_node)
         workflow.add_node("general_chat", self._general_chat_node)
+        # Mixed intent orchestration node
+        workflow.add_node("mixed_intent_orchestrator", self._mixed_intent_orchestrator_node)
         
         workflow.add_edge(START, "detect_intent")
         
@@ -95,7 +108,18 @@ class OrchestratorAgent:
                 "requirements_generation": "requirements_generation",
                 "rag_qa": "rag_qa",
                 "deep_research": "deep_research",
-                "general_chat": "general_chat"
+                "general_chat": "general_chat",
+                "mixed_intent": "mixed_intent_orchestrator"
+            }
+        )
+        
+        # Mixed intent orchestrator routes back to itself or ends
+        workflow.add_conditional_edges(
+            "mixed_intent_orchestrator",
+            self._route_mixed_intent,
+            {
+                "continue": "mixed_intent_orchestrator",
+                "end": END
             }
         )
         
@@ -108,31 +132,83 @@ class OrchestratorAgent:
     
     @traceable(name="detect_intent_node")
     def _detect_intent_node(self, state: AgentState) -> AgentState:
-        """Detect user intent and route to appropriate node."""
+        """Detect user intent (single or mixed) and route to appropriate node."""
         has_files = "yes" if state.get("uploaded_files") else "no"
         
-        chain = self.intent_detection_prompt | self.llm
+        # Use mixed intent detection prompt for more comprehensive detection
+        chain = self.mixed_intent_detection_prompt | self.llm
         result = chain.invoke({
             "role": state["role"],
             "user_input": state["user_input"],
             "has_files": has_files
         })
         
-        intent = result.content.strip().lower()
-        state["intent"] = intent if intent in VALID_INTENTS else "general_chat"
+        detected_intent = result.content.strip().lower()
         
-        # Record chain of thought
-        thought = f"Thought: Detected intent '{state['intent']}' for input '{state['user_input'][:50]}...', routing to {state['intent']}_node"
-        state["chain_of_thought"].append(thought)
-        logger.info(thought)
+        # Check if it's a mixed intent (contains '+')
+        if '+' in detected_intent:
+            # Parse the intent sequence
+            intent_parts = [i.strip() for i in detected_intent.split('+')]
+            # Validate all parts are valid intents
+            valid_parts = [i for i in intent_parts if i in VALID_INTENTS and i != 'general_chat']
+            
+            if len(valid_parts) >= 2:
+                # Valid mixed intent
+                state["is_mixed_intent"] = True
+                state["intent_sequence"] = valid_parts
+                state["current_intent_index"] = 0
+                state["intent"] = detected_intent
+                state["intermediate_results"] = {}
+                
+                thought = f"Thought: Detected MIXED intent '{detected_intent}' -> workflow: {' -> '.join(valid_parts)}"
+                state["chain_of_thought"].append(thought)
+                logger.info(thought)
+            else:
+                # Fallback to single intent if mixed parsing fails
+                state["is_mixed_intent"] = False
+                state["intent_sequence"] = []
+                state["intent"] = valid_parts[0] if valid_parts else "general_chat"
+                thought = f"Thought: Mixed intent parsing failed, using single intent '{state['intent']}'"
+                state["chain_of_thought"].append(thought)
+                logger.info(thought)
+        else:
+            # Single intent
+            state["is_mixed_intent"] = False
+            state["intent_sequence"] = []
+            state["intent"] = detected_intent if detected_intent in VALID_INTENTS else "general_chat"
+            
+            thought = f"Thought: Detected single intent '{state['intent']}' for input '{state['user_input'][:50]}...'"
+            state["chain_of_thought"].append(thought)
+            logger.info(thought)
         
         return state
     
     def _route_intent(self, state: AgentState) -> str:
         """Router function: routes to appropriate node based on intent."""
+        if state.get("is_mixed_intent") and state.get("intent_sequence"):
+            logger.info(f"Routing to mixed_intent_orchestrator for sequence: {state['intent_sequence']}")
+            return "mixed_intent"
+        
         intent = state["intent"]
         logger.info(f"Routing to: {intent}")
         return intent
+    
+    def _route_mixed_intent(self, state: AgentState) -> str:
+        """Router for mixed intent orchestrator - continue or end."""
+        current_idx = state.get("current_intent_index", 0)
+        intent_sequence = state.get("intent_sequence", [])
+        
+        # Continue if there are more steps to execute OR if finalization hasn't run yet
+        # Finalization runs when current_idx == len(intent_sequence) and response is empty
+        if current_idx < len(intent_sequence):
+            return "continue"
+        
+        # Check if finalization has already run (response is populated)
+        if not state.get("response"):
+            # Need one more iteration to finalize
+            return "continue"
+        
+        return "end"
     
     @traceable(name="requirements_generation_node")
     def _requirements_generation_node(self, state: AgentState) -> AgentState:
@@ -167,28 +243,23 @@ class OrchestratorAgent:
             state["memory"] = {"summary": self.memory.get_summary()[:500]}
             
             # Determine if we should generate a diagram
+            # IMPORTANT: Only generate diagrams when user EXPLICITLY requests one
+            # Auto-generation is disabled to avoid unnecessary diagram creation
             chart_tool = MermaidChartTool()
             should_generate = False
             diagram_type = "sequence"
             
-            # Priority 1: User explicitly requested a diagram
+            # Only generate diagram if user explicitly requested it
             if should_generate_chart(state["user_input"]):
                 thought = "Thought: User explicitly requested a diagram"
                 state["chain_of_thought"].append(thought)
                 logger.info(thought)
                 should_generate = True
                 diagram_type = chart_tool.detect_diagram_type(state["user_input"])
-            else:
-                # Priority 2: Auto-detect if requirements content suggests a diagram would help
-                auto_generate, auto_type = should_auto_generate_diagram(result.content)
-                if auto_generate:
-                    thought = f"Thought: Requirements content suggests a {auto_type} diagram would be helpful"
-                    state["chain_of_thought"].append(thought)
-                    logger.info(thought)
-                    should_generate = True
-                    diagram_type = auto_type
+            # Note: Auto-detection logic (should_auto_generate_diagram) is intentionally NOT used here
+            # to avoid generating diagrams when user didn't explicitly request them
             
-            # Generate the diagram if needed
+            # Generate the diagram only if explicitly requested
             if should_generate:
                 thought = f"Thought: Generating {diagram_type} Mermaid chart"
                 state["chain_of_thought"].append(thought)
@@ -234,7 +305,7 @@ class OrchestratorAgent:
             result = self.rag_chain.invoke(
                 query=state["user_input"],
                 history=history,
-                use_restatement=True,
+                use_rewriting=True,
                 use_graph=True,
                 use_websearch=True
             )
@@ -359,6 +430,256 @@ class OrchestratorAgent:
         
         return state
     
+    @traceable(name="mixed_intent_orchestrator_node")
+    def _mixed_intent_orchestrator_node(self, state: AgentState) -> AgentState:
+        """
+        Orchestrate mixed intent workflows by executing intents in sequence.
+        Each intent's output becomes context for the next intent.
+        """
+        intent_sequence = state.get("intent_sequence", [])
+        current_idx = state.get("current_intent_index", 0)
+        
+        if current_idx >= len(intent_sequence):
+            # All intents processed, finalize response
+            return self._finalize_mixed_intent_response(state)
+        
+        current_intent = intent_sequence[current_idx]
+        total_steps = len(intent_sequence)
+        
+        thought = f"Thought: Mixed intent step {current_idx + 1}/{total_steps}: Executing '{current_intent}'"
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        try:
+            # Execute the current intent and capture results
+            if current_intent == "rag_qa":
+                state = self._execute_rag_step(state)
+            elif current_intent == "deep_research":
+                state = self._execute_research_step(state)
+            elif current_intent == "requirements_generation":
+                state = self._execute_requirements_step(state)
+            
+            # Move to next intent
+            state["current_intent_index"] = current_idx + 1
+            
+            thought = f"Thought: Completed step {current_idx + 1}/{total_steps}, intermediate result stored"
+            state["chain_of_thought"].append(thought)
+            logger.info(thought)
+            
+        except Exception as e:
+            error_thought = f"Thought: Error in mixed intent step '{current_intent}': {str(e)}"
+            state["chain_of_thought"].append(error_thought)
+            logger.error(error_thought)
+            state["intermediate_results"][f"{current_intent}_error"] = str(e)
+            state["current_intent_index"] = current_idx + 1
+        
+        return state
+    
+    def _execute_rag_step(self, state: AgentState) -> AgentState:
+        """Execute RAG search as part of mixed intent workflow."""
+        thought = "Thought: [RAG Step] Searching documents for relevant context..."
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        index_stats = self.rag_indexer.get_index_stats()
+        
+        if not index_stats.get("has_vectorstore") or index_stats.get("indexed_files", 0) == 0:
+            state["intermediate_results"]["rag_qa"] = {
+                "status": "no_documents",
+                "context": "",
+                "sources": [],
+                "message": "No documents indexed. Proceeding with user query only."
+            }
+            return state
+        
+        history = state.get("conversation_history", "")
+        result = self.rag_chain.invoke(
+            query=state["user_input"],
+            history=history,
+            use_rewriting=True,
+            use_graph=True,
+            use_websearch=False  # Don't web search in mixed intent - let deep_research handle that
+        )
+        
+        # Store RAG results for downstream intents
+        state["intermediate_results"]["rag_qa"] = {
+            "status": "success",
+            "answer": result.get("answer", ""),
+            "context": result.get("answer", ""),  # Use answer as context for next step
+            "sources": result.get("sources", []),
+            "graph_entities": result.get("graph_entities", [])
+        }
+        
+        thought = f"Thought: [RAG Step] Found {len(result.get('sources', []))} sources"
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        return state
+    
+    def _execute_research_step(self, state: AgentState) -> AgentState:
+        """Execute deep research as part of mixed intent workflow."""
+        thought = "Thought: [Research Step] Conducting deep research..."
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        # Build research query with context from previous steps
+        research_query = state["user_input"]
+        if "rag_qa" in state.get("intermediate_results", {}):
+            rag_context = state["intermediate_results"]["rag_qa"].get("context", "")
+            if rag_context:
+                research_query = f"{state['user_input']}\n\nContext from documents:\n{rag_context[:1000]}"
+        
+        result = self.deep_research_workflow.invoke(research_query)
+        
+        state["intermediate_results"]["deep_research"] = {
+            "status": result.get("status", "unknown"),
+            "report": result.get("report", ""),
+            "tasks": result.get("tasks", []),
+            "pdf_path": result.get("pdf_path", "")
+        }
+        
+        if result.get("pdf_path"):
+            state["pdf_path"] = result["pdf_path"]
+        
+        thought = f"Thought: [Research Step] Research completed with {len(result.get('tasks', []))} tasks"
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        return state
+    
+    def _execute_requirements_step(self, state: AgentState) -> AgentState:
+        """Execute requirements generation as part of mixed intent workflow."""
+        thought = "Thought: [Requirements Step] Generating requirements based on gathered context..."
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        # Build enhanced context from previous steps
+        context_parts = []
+        intermediate = state.get("intermediate_results", {})
+        
+        if "rag_qa" in intermediate:
+            rag_result = intermediate["rag_qa"]
+            if rag_result.get("context"):
+                context_parts.append(f"**Document Analysis:**\n{rag_result['context'][:2000]}")
+            if rag_result.get("sources"):
+                sources_text = ", ".join([s.get("filename", "Unknown") for s in rag_result["sources"][:5]])
+                context_parts.append(f"**Referenced Documents:** {sources_text}")
+        
+        if "deep_research" in intermediate:
+            research_result = intermediate["deep_research"]
+            if research_result.get("report"):
+                context_parts.append(f"**Research Findings:**\n{research_result['report'][:2000]}")
+        
+        enhanced_context = "\n\n".join(context_parts) if context_parts else ""
+        
+        # Generate requirements with enhanced context
+        role_prompt = select_role_prompt(state["role"])
+        focus = state.get("focus", state["user_input"])
+        
+        if enhanced_context:
+            focus = f"{focus}\n\n---\n**Gathered Context:**\n{enhanced_context}"
+        
+        formatted_prompt = role_prompt.format(
+            focus=focus,
+            history=state.get("conversation_history", "No previous conversation.")
+        )
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", formatted_prompt),
+            ("human", "{user_input}")
+        ])
+        
+        chain = prompt | self.llm
+        result = chain.invoke({"user_input": state["user_input"]})
+        
+        state["intermediate_results"]["requirements_generation"] = {
+            "status": "success",
+            "content": result.content,
+            "context_used": bool(enhanced_context)
+        }
+        
+        # Check for diagram generation - ONLY when user explicitly requests
+        # Auto-generation is disabled to avoid unnecessary diagram creation
+        chart_tool = MermaidChartTool()
+        if should_generate_chart(state["user_input"]):
+            diagram_type = chart_tool.detect_diagram_type(state["user_input"])
+            mermaid_code = chart_tool.generate(result.content, diagram_type)
+            state["intermediate_results"]["requirements_generation"]["mermaid_chart"] = mermaid_code
+            state["mermaid_chart"] = mermaid_code
+        # Note: Auto-detection logic (should_auto_generate_diagram) is intentionally NOT used here
+        # to avoid generating diagrams when user didn't explicitly request them
+        
+        thought = f"Thought: [Requirements Step] Generated {len(result.content)} chars of requirements"
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        return state
+    
+    def _finalize_mixed_intent_response(self, state: AgentState) -> AgentState:
+        """Compile final response from all mixed intent steps."""
+        intermediate = state.get("intermediate_results", {})
+        intent_sequence = state.get("intent_sequence", [])
+        
+        thought = f"Thought: Finalizing mixed intent response for workflow: {' -> '.join(intent_sequence)}"
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        response_parts = [f"**[Mixed Intent Workflow: {' → '.join(intent_sequence)}]**\n"]
+        
+        # Add RAG results if present
+        if "rag_qa" in intermediate:
+            rag = intermediate["rag_qa"]
+            if rag.get("status") == "success":
+                response_parts.append("\n---\n### 📄 Document Analysis\n")
+                if rag.get("sources"):
+                    response_parts.append(f"*Found {len(rag['sources'])} relevant document sections*\n")
+                # Don't include full RAG answer if requirements follow - it's used as context
+                if "requirements_generation" not in intent_sequence:
+                    response_parts.append(f"\n{rag.get('answer', '')}\n")
+            elif rag.get("status") == "no_documents":
+                response_parts.append("\n⚠️ *No documents indexed - proceeding with query only*\n")
+        
+        # Add research results if present
+        if "deep_research" in intermediate:
+            research = intermediate["deep_research"]
+            if research.get("status") == "complete":
+                response_parts.append("\n---\n### 🔬 Research Findings\n")
+                if research.get("tasks"):
+                    response_parts.append(f"*Completed {len(research['tasks'])} research tasks*\n")
+                # Truncate if requirements follow
+                report = research.get("report", "")
+                if "requirements_generation" in intent_sequence:
+                    response_parts.append(f"\n{report[:1500]}{'...' if len(report) > 1500 else ''}\n")
+                else:
+                    response_parts.append(f"\n{report[:3000]}{'...' if len(report) > 3000 else ''}\n")
+                if research.get("pdf_path"):
+                    response_parts.append(f"\n📄 **Full Report:** `{research['pdf_path']}`\n")
+        
+        # Add requirements results if present (this is usually the final output)
+        if "requirements_generation" in intermediate:
+            req = intermediate["requirements_generation"]
+            if req.get("status") == "success":
+                response_parts.append(f"\n---\n### 📋 Generated Requirements ({state['role']})\n")
+                if req.get("context_used"):
+                    response_parts.append("*Requirements generated based on document analysis and research*\n")
+                response_parts.append(f"\n{req.get('content', '')}\n")
+                
+                if req.get("mermaid_chart"):
+                    response_parts.append(f"\n---\n**📊 Generated Diagram:**\n\n{req['mermaid_chart']}")
+        
+        state["response"] = "".join(response_parts)
+        
+        # Update memory
+        self.memory.add_message(state["user_input"], "user")
+        self.memory.add_message(state["response"], "assistant")
+        state["memory"] = {"summary": self.memory.get_summary()[:500]}
+        
+        thought = f"Thought: Mixed intent workflow completed successfully"
+        state["chain_of_thought"].append(thought)
+        logger.info(thought)
+        
+        return state
+    
     @traceable(name="orchestrator_process")
     def process(self, user_input: str, role: str, uploaded_files: list = None, focus: str = "") -> dict:
         """
@@ -382,7 +703,12 @@ class OrchestratorAgent:
             "focus": focus if focus else user_input,
             "pdf_path": "",
             "chain_of_thought": [],
-            "mermaid_chart": ""
+            "mermaid_chart": "",
+            # Mixed intent support
+            "is_mixed_intent": False,
+            "intent_sequence": [],
+            "current_intent_index": 0,
+            "intermediate_results": {}
         }
         
         final_state = self.graph.invoke(initial_state)
@@ -423,16 +749,36 @@ class OrchestratorAgent:
         )
     
     def detect_intent(self, user_input: str, role: str, has_files: bool = False) -> str:
-        """Detect intent without processing - for streaming decisions."""
+        """
+        Detect intent without processing - for streaming decisions.
+        Returns single intent or mixed intent pattern (e.g., 'rag_qa+requirements_generation').
+        """
         has_files_str = "yes" if has_files else "no"
-        chain = self.intent_detection_prompt | self.llm
+        # Use mixed intent detection for comprehensive detection
+        chain = self.mixed_intent_detection_prompt | self.llm
         result = chain.invoke({
             "role": role,
             "user_input": user_input,
             "has_files": has_files_str
         })
-        intent = result.content.strip().lower()
-        return intent if intent in VALID_INTENTS else "general_chat"
+        detected_intent = result.content.strip().lower()
+        
+        # Validate the detected intent
+        if '+' in detected_intent:
+            # Mixed intent - validate all parts
+            intent_parts = [i.strip() for i in detected_intent.split('+')]
+            valid_parts = [i for i in intent_parts if i in VALID_INTENTS and i != 'general_chat']
+            if len(valid_parts) >= 2:
+                return '+'.join(valid_parts)
+            elif valid_parts:
+                return valid_parts[0]
+            return "general_chat"
+        
+        return detected_intent if detected_intent in VALID_INTENTS else "general_chat"
+    
+    def is_mixed_intent(self, intent: str) -> bool:
+        """Check if an intent string represents a mixed intent."""
+        return '+' in intent and len(intent.split('+')) >= 2
     
     def stream_general_chat(self, user_input: str):
         """Stream response for general chat - yields chunks."""
@@ -454,10 +800,6 @@ class OrchestratorAgent:
     def get_rag_indexer(self) -> RAGIndexer:
         """Get the RAG indexer instance for external access."""
         return self.rag_indexer
-    
-    def get_rag_chain(self) -> AgenticRAGChain:
-        """Get the RAG chain instance for external access."""
-        return self.rag_chain
     
     def clear_memory(self):
         """Clear conversation memory."""

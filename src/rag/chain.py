@@ -18,7 +18,13 @@ logger = get_logger(__name__)
 
 class AgenticRAGChain:
     """
-    Agentic RAG chain with query restatement, GraphRAG retrieval, and conditional web search.
+    Agentic RAG chain with query rewriting, true hybrid retrieval, and conditional web search.
+    
+    Retrieval Strategy:
+    1. Query Rewriting: Agent rewrites query for better retrieval
+    2. Hybrid Search: Runs graph, vector, and keyword search simultaneously
+    3. Result Ranking: Agent ranks and merges results from all strategies
+    4. Fallback: Web search if local results are insufficient
     """
     
     def __init__(self, indexer: RAGIndexer):
@@ -35,9 +41,29 @@ class AgenticRAGChain:
         self.web_search = None
         self._init_web_search()
         
-        self.restate_prompt = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPTS["query_restatement"]),
-            ("human", "Original query: {query}\nConversation context: {context}")
+        self.rewrite_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a query rewriting expert for document retrieval.
+Rewrite the user's query to improve retrieval results. Consider:
+1. Extract key terms, IDs (like INT-004, REQ-001), and concepts
+2. Expand abbreviations if helpful
+3. Add synonyms for important terms
+4. Keep the query focused and specific
+
+Output format: Return ONLY the rewritten query, nothing else.
+If the query is already optimal, return it unchanged."""),
+            ("human", "Original query: {query}\nContext: {context}")
+        ])
+        
+        self.rank_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a relevance ranking expert. Given a query and retrieved documents, 
+rank them by relevance (1=most relevant). Consider:
+1. Direct answer to the query
+2. Contains specific IDs or terms mentioned in query
+3. Provides context or related information
+
+Output format: Return comma-separated indices of documents in order of relevance.
+Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
+            ("human", "Query: {query}\n\nDocuments:\n{documents}")
         ])
         
         self.evaluate_prompt = ChatPromptTemplate.from_messages([
@@ -65,18 +91,63 @@ class AgenticRAGChain:
         except Exception as e:
             logger.warning(f"Failed to initialize web search: {e}")
     
-    def restate_query(self, query: str, context: str = "") -> str:
-        """Restate query for better retrieval."""
+    def rewrite_query(self, query: str, context: str = "") -> str:
+        """
+        Rewrite query for better retrieval using LLM.
+        Extracts key terms, IDs, and concepts to improve search results.
+        """
         try:
-            chain = self.restate_prompt | self.llm
-            result = chain.invoke({"query": query, "context": context})
-            restated = result.content.strip()
-            if restated and len(restated) > 5:
-                logger.info(f"Query restated: '{query}' -> '{restated}'")
-                return restated
+            chain = self.rewrite_prompt | self.llm
+            result = chain.invoke({"query": query, "context": context or "No context"})
+            rewritten = result.content.strip()
+            if rewritten and len(rewritten) > 3:
+                logger.info(f"Query rewritten: '{query}' -> '{rewritten}'")
+                return rewritten
         except Exception as e:
-            logger.warning(f"Query restatement failed: {e}")
+            logger.warning(f"Query rewriting failed: {e}")
         return query
+    
+    def rank_documents(self, query: str, docs: List) -> List:
+        """
+        Use LLM to rank documents by relevance to the query.
+        Returns documents in ranked order.
+        """
+        if not docs or len(docs) <= 1:
+            return docs
+        
+        try:
+            doc_summaries = []
+            for i, doc in enumerate(docs[:10]):
+                preview = doc.page_content[:300].replace('\n', ' ')
+                doc_summaries.append(f"[{i}] {preview}")
+            
+            chain = self.rank_prompt | self.llm
+            result = chain.invoke({
+                "query": query,
+                "documents": "\n\n".join(doc_summaries)
+            })
+            
+            ranking_str = result.content.strip()
+            indices = []
+            for part in ranking_str.replace(" ", "").split(","):
+                try:
+                    idx = int(part)
+                    if 0 <= idx < len(docs) and idx not in indices:
+                        indices.append(idx)
+                except ValueError:
+                    continue
+            
+            for i in range(len(docs)):
+                if i not in indices:
+                    indices.append(i)
+            
+            ranked_docs = [docs[i] for i in indices if i < len(docs)]
+            logger.info(f"Documents ranked: {indices[:5]}...")
+            return ranked_docs
+            
+        except Exception as e:
+            logger.warning(f"Document ranking failed: {e}")
+            return docs
     
     def web_search_query(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
         """Perform web search."""
@@ -110,17 +181,24 @@ class AgenticRAGChain:
         self,
         query: str,
         history: str = "",
-        use_restatement: bool = True,
+        use_rewriting: bool = True,
         use_graph: bool = True,
         use_websearch: bool = True
     ) -> Dict[str, Any]:
         """
-        Execute the agentic RAG chain.
+        Execute the agentic RAG chain with true hybrid retrieval.
+        
+        Strategy:
+        1. Rewrite query for better retrieval
+        2. Run ALL search strategies simultaneously (graph, vector, keyword)
+        3. Merge and deduplicate results
+        4. Rank results by relevance using LLM
+        5. If results insufficient, try web search
         
         Args:
             query: User query
             history: Conversation history
-            use_restatement: Whether to use query restatement
+            use_rewriting: Whether to use query rewriting
             use_graph: Whether to use GraphRAG
             use_websearch: Whether to allow web search fallback
             
@@ -131,9 +209,12 @@ class AgenticRAGChain:
             "answer": "",
             "sources": [],
             "graph_entities": [],
+            "graph_context": "",
             "web_sources": [],
-            "query_restated": False,
+            "query_rewritten": False,
+            "rewritten_query": "",
             "web_search_triggered": False,
+            "search_methods": [],
             "status": "success"
         }
         
@@ -144,11 +225,64 @@ class AgenticRAGChain:
         
         try:
             search_query = query
-            if use_restatement:
-                search_query = self.restate_query(query, history)
-                result["query_restated"] = search_query != query
+            if use_rewriting:
+                search_query = self.rewrite_query(query, history)
+                result["query_rewritten"] = search_query != query
+                result["rewritten_query"] = search_query
             
-            docs = self.indexer.similarity_search(search_query, k=5)
+            all_docs = []
+            seen_content = set()
+            graph_context = ""
+            graph_entities = []
+            methods_used = []
+            
+            if use_graph and self.indexer.graphrag_available:
+                graph_result = self.indexer.graph_search(search_query)
+                graph_context = graph_result.get("context", "")
+                graph_entities = graph_result.get("entities", [])
+                if graph_result.get("found"):
+                    methods_used.append("graph")
+            
+            vector_docs = self.indexer.similarity_search(search_query, k=8)
+            for doc in vector_docs:
+                content_hash = hash(doc.page_content[:200])
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    all_docs.append(doc)
+            if vector_docs:
+                methods_used.append("vector")
+            
+            keyword_docs = self.indexer.keyword_search(search_query, k=8)
+            for doc in keyword_docs:
+                content_hash = hash(doc.page_content[:200])
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    all_docs.append(doc)
+            if keyword_docs:
+                methods_used.append("keyword")
+            
+            if search_query != query:
+                orig_vector = self.indexer.similarity_search(query, k=5)
+                for doc in orig_vector:
+                    content_hash = hash(doc.page_content[:200])
+                    if content_hash not in seen_content:
+                        seen_content.add(content_hash)
+                        all_docs.append(doc)
+                
+                orig_keyword = self.indexer.keyword_search(query, k=5)
+                for doc in orig_keyword:
+                    content_hash = hash(doc.page_content[:200])
+                    if content_hash not in seen_content:
+                        seen_content.add(content_hash)
+                        all_docs.append(doc)
+            
+            logger.info(f"Hybrid search collected {len(all_docs)} unique docs via {methods_used}")
+            
+            if len(all_docs) > 3:
+                all_docs = self.rank_documents(query, all_docs)
+            
+            docs = all_docs[:10]
+            
             doc_context = "\n\n".join([
                 f"[Source: {doc.metadata.get('filename', 'Unknown')}]\n{doc.page_content}"
                 for doc in docs
@@ -162,15 +296,12 @@ class AgenticRAGChain:
                 }
                 for doc in docs
             ]
-            
-            graph_context = ""
-            if use_graph and self.indexer.graphrag_available:
-                graph_result = self.indexer.graph_search(search_query)
-                graph_context = graph_result.get("context", "")
-                result["graph_entities"] = graph_result.get("entities", [])
+            result["search_methods"] = methods_used
+            result["graph_context"] = graph_context
+            result["graph_entities"] = graph_entities
             
             web_context = ""
-            if use_websearch and self.web_search_available:
+            if use_websearch and self.web_search_available and not docs:
                 rag_preview = doc_context[:1000] if doc_context else "No documents found"
                 needs_web, web_query = self.evaluate_rag_result(query, rag_preview)
                 
@@ -194,6 +325,7 @@ class AgenticRAGChain:
             })
             
             result["answer"] = answer.content
+            logger.info(f"RAG completed: {len(docs)} docs, methods={methods_used}")
             
         except Exception as e:
             logger.error(f"RAG chain error: {e}")

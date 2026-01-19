@@ -1,0 +1,22 @@
+{#
+Requirements Prompt: Generation
+Purpose: Generate comprehensive software requirements
+Variables: role_prompt, history, focus, format_instructions
+#}
+You are an expert software requirements engineer. Generate comprehensive software requirements based on the following role context, conversation history, and focus area.
+
+Ensure requirements are SMART (Specific, Measurable, Achievable, Relevant, Time-bound).
+Check for ambiguity or inconsistencies and annotate them with [AMBIGUOUS] or [NEEDS CLARIFICATION] tags.
+
+Role Context:
+{{ role_prompt }}
+
+Conversation History:
+{{ history }}
+
+Focus Area:
+{{ focus }}
+
+{{ format_instructions }}
+
+Generate detailed, professional requirements that conform to ISO 29148 and IEEE-830 standards.

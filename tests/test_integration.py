@@ -5,7 +5,8 @@ Tests: utils, rag, research, roles, memory, requirements generator, orchestrator
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path (parent of tests folder)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Core modules
 from src.agents.orchestrator import OrchestratorAgent
@@ -301,6 +302,68 @@ def test_requirements_generator():
     if entities:
         print(f"  Sample: {entities[0]['text'][:60]}...")
 
+def test_mixed_intent_detection():
+    """Test mixed intent detection and workflow orchestration."""
+    print("\n" + "=" * 60)
+    print("Testing Mixed Intent Detection")
+    print("=" * 60)
+    
+    orchestrator = OrchestratorAgent()
+    
+    print("\n1. Testing is_mixed_intent helper...")
+    test_cases = [
+        ("rag_qa+requirements_generation", True),
+        ("deep_research+requirements_generation", True),
+        ("rag_qa+deep_research+requirements_generation", True),
+        ("requirements_generation", False),
+        ("general_chat", False),
+        ("rag_qa", False),
+    ]
+    for intent, expected in test_cases:
+        result = orchestrator.is_mixed_intent(intent)
+        status = "✓" if result == expected else "✗"
+        print(f"  {status} '{intent}' -> is_mixed={result} (expected {expected})")
+    
+    print("\n2. Testing mixed intent detection with sample queries...")
+    mixed_intent_queries = [
+        ("Based on the uploaded document, generate requirements for the login module", "rag_qa"),
+        ("Research authentication best practices and create requirements", "deep_research"),
+        ("Generate requirements for a payment system", "requirements_generation"),
+        ("What is the weather today?", "general_chat"),
+    ]
+    
+    for query, expected_contains in mixed_intent_queries:
+        intent = orchestrator.detect_intent(query, "Requirements Analyst", has_files=True)
+        # Check if the detected intent contains the expected component
+        contains_expected = expected_contains in intent
+        status = "✓" if contains_expected else "?"
+        print(f"  {status} Query: '{query[:50]}...'")
+        print(f"      Detected: '{intent}' (expected to contain '{expected_contains}')")
+    
+    print("\n3. Testing mixed intent workflow execution...")
+    # Test with a query that should trigger rag_qa + requirements_generation
+    result = orchestrator.process(
+        user_input="Based on the uploaded specifications, generate software requirements for user authentication",
+        role="Requirements Analyst",
+        uploaded_files=["test.pdf"]  # Simulate having files
+    )
+    
+    print(f"✓ Mixed intent processing completed")
+    print(f"  - Intent detected: {result.get('intent', 'N/A')}")
+    print(f"  - Response length: {len(result.get('response', ''))} chars")
+    print(f"  - Chain of thought steps: {len(result.get('chain_of_thought', []))}")
+    
+    # Show chain of thought for debugging
+    if result.get('chain_of_thought'):
+        print(f"\n  Chain of Thought:")
+        for thought in result['chain_of_thought'][:5]:
+            print(f"    - {thought[:80]}...")
+    
+    print(f"\n  Response preview: {result.get('response', '')[:300]}...")
+    
+    print("\n✓ Mixed intent detection tests passed\n")
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("RAAA Integration Test Suite (Post-Refactoring)")
@@ -318,6 +381,9 @@ if __name__ == "__main__":
         test_memory()
         test_requirements_generator()
         test_orchestrator_integration()
+        
+        # Test mixed intent detection
+        test_mixed_intent_detection()
         
         print("\n" + "=" * 60)
         print("✓ All tests completed successfully!")

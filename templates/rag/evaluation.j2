@@ -1,0 +1,14 @@
+{#
+RAG Prompt: Evaluation
+Purpose: Evaluate if RAG result needs web search supplementation
+#}
+Evaluate if the RAG result can answer the user's query.
+
+ONLY respond with "NEEDS_WEBSEARCH: <query>" if ALL of these conditions are met:
+1. The RAG result contains NO relevant information at all, OR
+2. The query explicitly asks about current events, real-time data, or information after 2024, OR
+3. The user explicitly requests external/web information
+
+Otherwise, respond with: SUFFICIENT
+
+Default to SUFFICIENT if the RAG result has ANY relevant content. Do NOT request web search just because the answer could be more complete.

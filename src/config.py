@@ -1,12 +1,66 @@
 """
 Centralized configuration for the Requirements Analysis Agent Assistant.
 Contains all constants, settings, and configuration values.
+
+Supports Jinja2 templates for prompts when available, with fallback to hardcoded prompts.
 """
 import os
 from pathlib import Path
+from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# =============================================================================
+# Template Management (Optional - requires Jinja2)
+# =============================================================================
+TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
+
+def _get_template_loader():
+    """Get template loader if Jinja2 is available."""
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from templates import get_template_loader
+        return get_template_loader()
+    except (ImportError, Exception):
+        return None
+
+def get_available_roles() -> List[str]:
+    """
+    Get list of available roles. 
+    Prefers Jinja templates if available, falls back to hardcoded roles.
+    """
+    loader = _get_template_loader()
+    if loader:
+        roles = loader.get_available_roles()
+        if roles:
+            return roles
+    return list(ROLE_PROMPT_TEMPLATES.keys())
+
+def get_role_prompt(role_name: str, history: str = "", focus: str = "") -> str:
+    """
+    Get a role prompt by name.
+    Prefers Jinja templates if available, falls back to hardcoded prompts.
+    
+    Args:
+        role_name: Name of the role
+        history: Conversation history
+        focus: Focus area for requirements
+        
+    Returns:
+        Rendered role prompt string
+    """
+    loader = _get_template_loader()
+    if loader:
+        try:
+            return loader.get_role_prompt(role_name, history=history, focus=focus)
+        except FileNotFoundError:
+            pass
+    
+    # Fallback to hardcoded prompts
+    template = ROLE_PROMPT_TEMPLATES.get(role_name, ROLE_PROMPT_TEMPLATES.get(DEFAULT_ROLE))
+    return template.format(history=history, focus=focus)
 
 # =============================================================================
 # Project Paths
@@ -15,7 +69,6 @@ PROJECT_ROOT = Path(__file__).parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 RAG_INDEX_DIR = PROJECT_ROOT / "rag_index"
-FAISS_INDEX_DIR = RAG_INDEX_DIR / "faiss_index"
 
 # Ensure directories exist
 REPORTS_DIR.mkdir(exist_ok=True)
@@ -104,13 +157,8 @@ Please provide comprehensive test cases, quality metrics, and validation strateg
 # =============================================================================
 SUPPORTED_FILE_TYPES = [
     "pdf", "docx", "doc", "pptx", "ppt", 
-    "xlsx", "xls", "txt", "png", "jpg", "jpeg"
+    "xlsx", "xls", "txt", "png", "jpg", "jpeg", "json"
 ]
-
-DOCUMENT_TYPES = ["pdf", "docx", "doc", "txt"]
-PRESENTATION_TYPES = ["pptx", "ppt"]
-SPREADSHEET_TYPES = ["xlsx", "xls"]
-IMAGE_TYPES = ["png", "jpg", "jpeg"]
 
 # =============================================================================
 # System Prompts
@@ -135,6 +183,33 @@ Analyze the user's input and classify it into ONE of these intents:
 4. general_chat - General conversation, greetings, or unclear intent
 
 Respond with ONLY the intent name (requirements_generation, rag_qa, deep_research, or general_chat).
+No explanation needed.""",
+
+    "mixed_intent_detection": """You are an intent classifier for a Requirements Analysis Agent Assistant.
+
+Analyze the user's input and determine if it involves MULTIPLE intents that should be executed in sequence.
+
+Available intents:
+1. rag_qa - User asks questions about uploaded documents or wants document-based answers
+2. deep_research - User requests in-depth research on a specific domain or topic  
+3. requirements_generation - User wants to generate software requirements
+4. general_chat - General conversation, greetings, or unclear intent
+
+Mixed intent patterns (use '+' to combine, order = execution order):
+- rag_qa+requirements_generation: Search uploaded documents THEN generate requirements based on findings
+- rag_qa+deep_research: Search documents THEN conduct deeper research on the topic
+- deep_research+requirements_generation: Research a topic THEN generate requirements
+- rag_qa+deep_research+requirements_generation: Full pipeline - search docs, research, then generate requirements
+
+Examples:
+- "Based on the uploaded specs, generate requirements for the login module" -> rag_qa+requirements_generation
+- "Research authentication best practices and create requirements" -> deep_research+requirements_generation
+- "What does the document say about user roles?" -> rag_qa (single intent)
+- "Generate requirements for a payment system" -> requirements_generation (single intent)
+- "Search the docs, research industry standards, then write requirements" -> rag_qa+deep_research+requirements_generation
+
+Respond with ONLY the intent pattern. Use '+' to combine multiple intents in execution order.
+If only one intent applies, respond with just that single intent name.
 No explanation needed.""",
 
     "query_restatement": """You are a query optimization expert. If the original query might lead to inaccurate retrieval, restate it to a more accurate version. Otherwise, leave it as is.
@@ -209,6 +284,18 @@ VALID_INTENTS = [
     "deep_research",
     "general_chat"
 ]
+
+# Mixed intent combinations (order matters for workflow execution)
+# Format: "intent1+intent2" where intent1 executes first, then intent2
+VALID_MIXED_INTENTS = [
+    "rag_qa+requirements_generation",      # Search docs -> generate requirements
+    "rag_qa+deep_research",                # Search docs -> deep research
+    "deep_research+requirements_generation", # Research -> generate requirements
+    "rag_qa+deep_research+requirements_generation",  # Full pipeline
+]
+
+# All valid intent patterns (single + mixed)
+ALL_VALID_INTENTS = VALID_INTENTS + VALID_MIXED_INTENTS
 
 # =============================================================================
 # UI Configuration
