@@ -58,7 +58,7 @@
 更详细的流程见：`docs/graph_construction.md`
 
 ## 目录结构
-
+```text
 RequirementAgent/
 ├── app.py
 ├── src/
@@ -80,7 +80,7 @@ RequirementAgent/
 ├── rag_index/
 ├── faiss_index/
 └── reports/
-
+```
 More specific directory structure:
 ```text
 RequirementAgent/
