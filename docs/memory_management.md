@@ -32,7 +32,7 @@
 
 ## 2. Agent 侧记忆：EnhancedConversationMemory
 
-代码位置：`src/modules/memory.py`
+代码位置：`src/memory/conversation.py`
 
 ### 2.1 记忆的组成
 `EnhancedConversationMemory` 内部维护了三类数据：
@@ -207,8 +207,80 @@ UI：`app.py` 的 `Export Index` 按钮。
 
 ---
 
-## 6. 相关源码索引
-- `src/modules/memory.py`
-- `src/agents/orchestrator.py`
-- `app.py`
-- `src/rag/indexer.py`
+## 6. Mem0 持久记忆集成（可选）
+
+本项目支持通过 [mem0](https://github.com/mem0ai/mem0) 框架实现**跨会话的持久化记忆**。启用后，对话历史和实体会被存储到本地向量数据库（ChromaDB），重启应用后仍可检索到之前的记忆。
+
+### 6.1 启用 Mem0
+
+1. **安装依赖**：
+   ```bash
+   pip install mem0ai
+   ```
+
+2. **配置环境变量**（在 `.env` 文件中添加）：
+   ```env
+   MEM0_ENABLED=true
+   MEM0_USER_ID=your_user_id          # 可选，默认 raaa_default_user
+   MEM0_STORAGE_PATH=./mem0_storage   # 可选，默认项目根目录下的 mem0_storage
+   ```
+
+3. **重启应用**，侧边栏会显示 Mem0 状态
+
+### 6.2 Mem0 存储的内容
+
+启用后，以下内容会自动存储到 Mem0：
+
+- **对话记录**：每次用户与助手的对话（包含 intent、role 等元数据）
+- **实体/需求**：生成 SRS 后抽取的 FR/NFR/BR 需求条目
+- **摘要**：对话摘要（当消息数超过阈值时自动生成）
+
+### 6.3 Mem0 的检索与注入
+
+- 在生成回答时，系统会自动从 Mem0 检索与当前查询相关的历史记忆
+- 检索结果会被注入到 LLM 的上下文中，增强回答的连贯性和个性化
+
+### 6.4 Mem0 配置项（`src/config.py`）
+
+```python
+MEM0_CONFIG = {
+    "enabled": os.getenv("MEM0_ENABLED", "false").lower() == "true",
+    "user_id": os.getenv("MEM0_USER_ID", "raaa_default_user"),
+    "storage_path": os.getenv("MEM0_STORAGE_PATH", "mem0_storage"),
+    "llm": {...},       # 使用 DeepSeek 作为 LLM
+    "embedder": {...},  # 使用 HuggingFace all-MiniLM-L6-v2
+    "vector_store": {   # 使用 ChromaDB 本地存储
+        "provider": "chroma",
+        "config": {"collection_name": "raaa_memories", "path": "..."}
+    },
+}
+```
+
+### 6.5 清除 Mem0 记忆
+
+- **UI 方式**：侧边栏点击 "🧠 Clear Mem0 Storage" 按钮
+- **代码方式**：`memory.clear_memory(clear_mem0=True)`
+
+### 6.6 Mem0 存储目录
+
+- `mem0_storage/`：ChromaDB 向量数据库文件（启用后自动创建）
+
+### 6.7 与现有记忆系统的关系
+
+Mem0 是**并行运行**的可选层，不会影响现有功能：
+
+| 记忆类型 | 原有实现 | Mem0 增强 |
+|---------|---------|----------|
+| 对话消息 | 内存（重启丢失） | 持久化到 ChromaDB |
+| 实体/需求 | FAISS 落盘 | 同时写入 Mem0 |
+| 摘要 | 内存 | 持久化到 Mem0 |
+| 检索注入 | 无 | 自动检索相关记忆 |
+
+---
+
+## 7. 相关源码索引
+- `src/modules/memory.py` - 核心记忆类
+- `src/modules/mem0_memory.py` - Mem0 封装模块
+- `src/agents/orchestrator.py` - 对话处理与记忆存储
+- `app.py` - UI 与记忆状态显示
+- `src/rag/indexer.py` - RAG 索引管理

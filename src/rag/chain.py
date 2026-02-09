@@ -1,5 +1,17 @@
 """
-Agentic RAG chain with query restatement, GraphRAG retrieval, and conditional web search.
+Agentic RAG Chain - 智能检索增强生成链
+
+实现智能的文档问答功能，支持：
+    - 查询重写：优化用户查询以提高检索效果
+    - 混合检索：同时使用向量检索、图检索和关键词检索
+    - 结果排序：智能排序和合并多种检索结果
+    - 网络回退：本地结果不足时自动搜索网络
+
+检索策略：
+    1. Query Rewriting: 代理重写查询以获得更好的检索结果
+    2. Hybrid Search: 同时运行图、向量和关键词搜索
+    3. Result Ranking: 代理对所有策略的结果进行排序和合并
+    4. Fallback: 如果本地结果不足，则进行网络搜索
 """
 import sys
 from pathlib import Path
@@ -8,10 +20,14 @@ from typing import List, Dict, Any, Tuple
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
+# 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from config import LLM_CONFIG, SYSTEM_PROMPTS
 from utils import get_logger
 from rag.indexer import RAGIndexer
+from integrations.langfuse import get_langfuse_handler, is_langfuse_enabled
 
 logger = get_logger(__name__)
 
@@ -36,6 +52,11 @@ class AgenticRAGChain:
             base_url=LLM_CONFIG["base_url"],
             temperature=0.3
         )
+        
+        # LangFuse tracing
+        self._langfuse_enabled = is_langfuse_enabled()
+        if self._langfuse_enabled:
+            logger.info("LangFuse tracing enabled for AgenticRAGChain")
         
         self.web_search_available = False
         self.web_search = None
@@ -71,10 +92,48 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
             ("human", "Query: {query}\nRAG Result: {rag_result}")
         ])
         
+        self.graph_decision_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a search strategy expert. Analyze the user's query and decide if a knowledge graph search would be beneficial.
+
+Graph search is useful when:
+1. The query asks about relationships between entities (e.g., "how does X relate to Y")
+2. The query references specific IDs or codes (e.g., REQ-001, LGT-004, INT-003)
+3. The query asks about dependencies, connections, or associations
+4. The query needs to trace requirements, features, or components
+
+Graph search is NOT needed when:
+1. The query is a simple factual question
+2. The query asks for definitions or explanations
+3. The query is about general concepts without specific entity references
+4. Vector/keyword search results are likely sufficient
+
+Respond with ONLY one of:
+- "USE_GRAPH: <reason>" if graph search would help
+- "SKIP_GRAPH: <reason>" if graph search is not needed"""),
+            ("human", "Query: {query}\nRewritten query: {rewritten_query}\nAvailable graph entities: {available_entities}")
+        ])
+        
         self.answer_prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPTS["rag_answer"]),
             ("human", "{query}")
         ])
+    
+    def _get_langfuse_callbacks(self, operation: str = None) -> list:
+        """Get LangFuse callbacks if enabled."""
+        if not self._langfuse_enabled:
+            return []
+        
+        handler = get_langfuse_handler(
+            tags=["raaa", "rag", f"op:{operation}"] if operation else ["raaa", "rag"],
+        )
+        return [handler] if handler else []
+    
+    def _invoke_with_langfuse(self, chain, inputs: dict, operation: str = None):
+        """Invoke a chain with LangFuse callbacks if enabled."""
+        callbacks = self._get_langfuse_callbacks(operation)
+        if callbacks:
+            return chain.invoke(inputs, config={"callbacks": callbacks})
+        return chain.invoke(inputs)
     
     def _init_web_search(self):
         """Initialize web search tool."""
@@ -98,7 +157,11 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
         """
         try:
             chain = self.rewrite_prompt | self.llm
-            result = chain.invoke({"query": query, "context": context or "No context"})
+            result = self._invoke_with_langfuse(
+                chain,
+                {"query": query, "context": context or "No context"},
+                operation="query_rewrite"
+            )
             rewritten = result.content.strip()
             if rewritten and len(rewritten) > 3:
                 logger.info(f"Query rewritten: '{query}' -> '{rewritten}'")
@@ -122,10 +185,11 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
                 doc_summaries.append(f"[{i}] {preview}")
             
             chain = self.rank_prompt | self.llm
-            result = chain.invoke({
-                "query": query,
-                "documents": "\n\n".join(doc_summaries)
-            })
+            result = self._invoke_with_langfuse(
+                chain,
+                {"query": query, "documents": "\n\n".join(doc_summaries)},
+                operation="doc_ranking"
+            )
             
             ranking_str = result.content.strip()
             indices = []
@@ -166,7 +230,11 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
         """Evaluate if RAG result needs web search supplementation."""
         try:
             chain = self.evaluate_prompt | self.llm
-            result = chain.invoke({"query": query, "rag_result": rag_result})
+            result = self._invoke_with_langfuse(
+                chain,
+                {"query": query, "rag_result": rag_result},
+                operation="rag_evaluation"
+            )
             content = result.content.strip()
             
             if content.startswith("NEEDS_WEBSEARCH:"):
@@ -176,6 +244,44 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
         except Exception as e:
             logger.warning(f"RAG evaluation failed: {e}")
             return False, ""
+    
+    def should_use_graph_search(self, query: str, rewritten_query: str) -> Tuple[bool, str]:
+        """
+        Use Agent to decide if graph search is beneficial for this query.
+        
+        Returns:
+            Tuple of (should_use_graph, reason)
+        """
+        if not self.indexer.graphrag_available:
+            return False, "Graph not available"
+        
+        try:
+            # Get a sample of available entities to help the agent decide
+            graph_stats = self.indexer.get_index_stats()
+            available_entities = "Graph available"
+            if graph_stats.get('neo4j_connected'):
+                available_entities = f"Neo4j connected with {graph_stats.get('neo4j_entity_count', 0)} entities"
+            
+            chain = self.graph_decision_prompt | self.llm
+            result = self._invoke_with_langfuse(
+                chain,
+                {"query": query, "rewritten_query": rewritten_query, "available_entities": available_entities},
+                operation="graph_decision"
+            )
+            content = result.content.strip()
+            
+            if content.startswith("USE_GRAPH:"):
+                reason = content.replace("USE_GRAPH:", "").strip()
+                logger.info(f"Agent decided to use graph search: {reason}")
+                return True, reason
+            else:
+                reason = content.replace("SKIP_GRAPH:", "").strip() if content.startswith("SKIP_GRAPH:") else content
+                logger.info(f"Agent decided to skip graph search: {reason}")
+                return False, reason
+                
+        except Exception as e:
+            logger.warning(f"Graph decision failed: {e}, defaulting to skip")
+            return False, f"Decision failed: {e}"
     
     def invoke(
         self,
@@ -236,13 +342,7 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
             graph_entities = []
             methods_used = []
             
-            if use_graph and self.indexer.graphrag_available:
-                graph_result = self.indexer.graph_search(search_query)
-                graph_context = graph_result.get("context", "")
-                graph_entities = graph_result.get("entities", [])
-                if graph_result.get("found"):
-                    methods_used.append("graph")
-            
+            # PRIORITY 1: Vector search (always run first)
             vector_docs = self.indexer.similarity_search(search_query, k=8)
             for doc in vector_docs:
                 content_hash = hash(doc.page_content[:200])
@@ -252,6 +352,7 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
             if vector_docs:
                 methods_used.append("vector")
             
+            # PRIORITY 2: Keyword search (always run)
             keyword_docs = self.indexer.keyword_search(search_query, k=8)
             for doc in keyword_docs:
                 content_hash = hash(doc.page_content[:200])
@@ -260,6 +361,18 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
                     all_docs.append(doc)
             if keyword_docs:
                 methods_used.append("keyword")
+            
+            # PRIORITY 3: Graph search (conditional - Agent decides if needed)
+            if use_graph and self.indexer.graphrag_available:
+                should_use_graph, graph_reason = self.should_use_graph_search(query, search_query)
+                result["graph_decision_reason"] = graph_reason
+                
+                if should_use_graph:
+                    graph_result = self.indexer.graph_search(search_query)
+                    graph_context = graph_result.get("context", "")
+                    graph_entities = graph_result.get("entities", [])
+                    if graph_result.get("found"):
+                        methods_used.append("graph")
             
             if search_query != query:
                 orig_vector = self.indexer.similarity_search(query, k=5)
@@ -316,13 +429,17 @@ Example: "2,0,3,1" means doc 2 is most relevant, then doc 0, etc."""),
                         result["web_search_triggered"] = True
             
             chain = self.answer_prompt | self.llm
-            answer = chain.invoke({
-                "query": query,
-                "doc_context": doc_context or "No relevant documents found.",
-                "graph_context": graph_context or "No graph context available.",
-                "web_context": web_context or "No web search performed.",
-                "history": history or "No previous conversation."
-            })
+            answer = self._invoke_with_langfuse(
+                chain,
+                {
+                    "query": query,
+                    "doc_context": doc_context or "No relevant documents found.",
+                    "graph_context": graph_context or "No graph context available.",
+                    "web_context": web_context or "No web search performed.",
+                    "history": history or "No previous conversation."
+                },
+                operation="rag_answer"
+            )
             
             result["answer"] = answer.content
             logger.info(f"RAG completed: {len(docs)} docs, methods={methods_used}")

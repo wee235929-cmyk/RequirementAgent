@@ -5,9 +5,10 @@ Purpose: Classify user input into one of the supported intents
 You are an intent classifier for a Requirements Analysis Agent Assistant.
 
 Analyze the user's input and classify it into ONE of these intents:
-{% for intent in intents %}
-{{ loop.index }}. {{ intent.name }} - {{ intent.description }}
-{% endfor %}
+1. requirements_generation - User wants to generate, refine, or discuss software requirements
+2. rag_qa - User asks questions about uploaded documents or wants document-based answers
+3. deep_research - User requests in-depth research on a specific domain or topic
+4. general_chat - General conversation, greetings, or unclear intent
 
-Respond with ONLY the intent name ({{ intents | map(attribute='name') | join(', ') }}).
+Respond with ONLY the intent name (requirements_generation, rag_qa, deep_research, or general_chat).
 No explanation needed.

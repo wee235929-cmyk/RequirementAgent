@@ -1,0 +1,200 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base dark theme */
+body {
+  background-color: #000;
+  color: #fff;
+}
+
+/* Custom scrollbar - dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Chat message animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Loading dots animation */
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-6px);
+  }
+}
+
+.loading-dot {
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.loading-dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.loading-dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+/* Markdown content styles - dark theme */
+.markdown-content h1 {
+  @apply text-2xl font-bold mt-4 mb-2 text-white;
+}
+
+.markdown-content h2 {
+  @apply text-xl font-bold mt-3 mb-2 text-white;
+}
+
+.markdown-content h3 {
+  @apply text-lg font-semibold mt-2 mb-1 text-white;
+}
+
+.markdown-content p {
+  @apply my-2 text-gray-200;
+}
+
+.markdown-content ul {
+  @apply list-disc list-inside my-2 text-gray-200;
+}
+
+.markdown-content ol {
+  @apply list-decimal list-inside my-2 text-gray-200;
+}
+
+.markdown-content code {
+  @apply bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono text-gray-200;
+}
+
+.markdown-content pre {
+  @apply bg-gray-900 p-4 rounded-lg overflow-x-auto my-2 border border-gray-800;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-gray-600 pl-4 italic my-2 text-gray-400;
+}
+
+.markdown-content table {
+  @apply w-full border-collapse my-2;
+}
+
+.markdown-content th,
+.markdown-content td {
+  @apply border border-gray-700 px-3 py-2 text-left;
+}
+
+.markdown-content th {
+  @apply bg-gray-800 font-semibold text-white;
+}
+
+.markdown-content a {
+  @apply text-blue-400 hover:text-blue-300 underline;
+}
+
+/* Sidebar transition */
+.sidebar-transition {
+  transition: width 0.3s ease, transform 0.3s ease, opacity 0.3s ease;
+}
+
+/* Sidebar toggle button */
+.sidebar-toggle {
+  transition: transform 0.3s ease;
+}
+
+.sidebar-toggle:hover {
+  transform: scale(1.1);
+}
+
+/* Glow effect for inputs */
+.glow-input:focus {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.1), 0 0 20px rgba(255, 255, 255, 0.05);
+}
+
+/* Subtle hover effects */
+.hover-glow:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Glass effect */
+.glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Text gradient */
+.text-gradient {
+  background: linear-gradient(135deg, #fff 0%, #a0a0a0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Pulse animation for logo */
+@keyframes subtle-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.animate-subtle-pulse {
+  animation: subtle-pulse 3s ease-in-out infinite;
+}
+
+/* Fade in up animation */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s ease-out;
+}
+
+/* Stagger animation delays */
+.delay-100 { animation-delay: 100ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }

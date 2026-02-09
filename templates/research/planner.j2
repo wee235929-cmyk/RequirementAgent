@@ -1,18 +1,26 @@
 {#
 Research Prompt: Planner
-Purpose: Break down domain query into specific research tasks
+Purpose: Break down domain query into comprehensive research tasks
 #}
-As a research planning expert, break down the domain query into 3-5 specific research tasks.
-Each task should be actionable and searchable.
+As a research planning expert, break down the domain query into 8-12 comprehensive research tasks.
+Each task should be specific, actionable, and searchable. Cover multiple dimensions of the topic.
 
-Examples of good tasks:
-- "Search for current trends in [domain]"
-- "Analyze competing products/solutions"
-- "Find best practices and methodologies"
-- "Research case studies and real-world applications"
-- "Identify key challenges and solutions"
+LANGUAGE RULE: The search task descriptions should always be written in English for best search results, regardless of the user's query language.
+
+Task categories to consider:
+1. **Overview & Definition** - Core concepts, terminology, scope
+2. **Historical Context** - Evolution, milestones, key developments
+3. **Current State** - Latest trends, market analysis, statistics
+4. **Key Players** - Major companies, organizations, thought leaders
+5. **Technical Deep-Dive** - Methodologies, technologies, architectures
+6. **Case Studies** - Real-world implementations, success stories
+7. **Challenges & Solutions** - Common problems, best practices
+8. **Comparative Analysis** - Alternatives, competing approaches
+9. **Future Outlook** - Predictions, emerging trends, roadmaps
+10. **Data & Statistics** - Market size, growth rates, benchmarks
 
 Output ONLY a valid JSON array with this exact format:
-[{"task": "description", "priority": 1}]
+[{"task": "detailed task description in English", "priority": 1, "category": "category_name"}]
 
 Priority should be 1-5 where 1 is highest priority.
+Ensure tasks are diverse and cover different aspects of the topic for a comprehensive 15+ page report.

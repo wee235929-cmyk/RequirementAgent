@@ -1,5 +1,20 @@
 """
-RAG Indexer module with FAISS vector storage and GraphRAG integration.
+RAG Indexer - 文档索引器
+
+提供文档的解析、分块、向量化和索引功能。
+
+主要功能：
+    - 文档解析：支持 PDF、Word、Markdown、TXT 等格式
+    - 文本分块：使用递归字符分割器进行智能分块
+    - 向量索引：使用 FAISS 进行高效的向量存储和检索
+    - 图索引：可选的 Neo4j 图存储，用于实体关系检索
+    - 文件去重：基于文件名+大小的去重机制
+    - 持久化：支持索引的保存和加载
+
+配置项（来自 RAG_CONFIG）：
+    - chunk_size: 分块大小（默认 1000）
+    - chunk_overlap: 分块重叠（默认 200）
+    - top_k: 检索返回数量（默认 5）
 """
 import sys
 import re
@@ -14,10 +29,13 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS as FAISSVectorStore
 
+# 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import LLM_CONFIG, EMBEDDING_CONFIG, RAG_CONFIG, RAG_INDEX_DIR
+
+from config import LLM_CONFIG, EMBEDDING_CONFIG, RAG_CONFIG, RAG_INDEX_DIR, NEO4J_CONFIG
 from utils import get_logger
 from rag.parser import DocumentParser
+from rag.neo4j_store import Neo4jGraphStore, create_neo4j_store
 
 logger = get_logger(__name__)
 
@@ -64,7 +82,28 @@ class RAGIndexer:
         self.graph_index = None
         self._graph_doc_count = 0
         
+        # Neo4j graph store (optional, enabled via config)
+        self.neo4j_store: Neo4jGraphStore = None
+        self.use_neo4j = NEO4J_CONFIG.get("enabled", False)
+        
+        if self.use_neo4j:
+            self._init_neo4j()
+        
         self._load_index()
+    
+    def _init_neo4j(self):
+        """Initialize Neo4j graph store if enabled."""
+        try:
+            self.neo4j_store = create_neo4j_store()
+            if self.neo4j_store and self.neo4j_store.connected:
+                logger.info("Neo4j graph store initialized successfully")
+                self.graphrag_available = True
+            else:
+                logger.warning("Neo4j enabled but connection failed, falling back to JSON storage")
+                self.use_neo4j = False
+        except Exception as e:
+            logger.warning(f"Failed to initialize Neo4j: {e}, falling back to JSON storage")
+            self.use_neo4j = False
     
     def _init_embeddings(self):
         """Initialize embeddings using config settings."""
@@ -119,13 +158,25 @@ class RAGIndexer:
                 ]
                 logger.info(f"Loaded {len(self.documents)} document chunks for keyword search")
             
-            graph_path = self.index_path / "graph_index.json"
-            if graph_path.exists():
-                with open(graph_path, 'r') as f:
-                    self.graph_index = json.load(f)
-                self.graphrag_available = True
-                self._graph_doc_count = self.graph_index.get("document_count", 0)
-                logger.info(f"Loaded graph index with {len(self.graph_index.get('entities', []))} entities")
+            # Load graph index - prefer Neo4j if enabled, otherwise use JSON
+            if self.use_neo4j and self.neo4j_store and self.neo4j_store.connected:
+                # Load graph stats from Neo4j
+                neo4j_stats = self.neo4j_store.get_stats()
+                if neo4j_stats.get("entity_count", 0) > 0:
+                    self.graphrag_available = True
+                    self._graph_doc_count = neo4j_stats.get("entity_count", 0)
+                    # Keep graph_index as cache for compatibility
+                    self.graph_index = self.neo4j_store.export_to_dict()
+                    logger.info(f"Loaded graph from Neo4j: {neo4j_stats.get('entity_count', 0)} entities, {neo4j_stats.get('relationship_count', 0)} relationships")
+            else:
+                # Fallback to JSON file
+                graph_path = self.index_path / "graph_index.json"
+                if graph_path.exists():
+                    with open(graph_path, 'r') as f:
+                        self.graph_index = json.load(f)
+                    self.graphrag_available = True
+                    self._graph_doc_count = self.graph_index.get("document_count", 0)
+                    logger.info(f"Loaded graph index from JSON with {len(self.graph_index.get('entities', []))} entities")
         except Exception as e:
             logger.warning(f"Failed to load existing index: {e}")
     
@@ -265,6 +316,7 @@ class RAGIndexer:
         """
         Build or update GraphRAG knowledge graph from indexed documents.
         Supports incremental updates when new documents are added.
+        Uses Neo4j if enabled, otherwise falls back to JSON file storage.
         
         Args:
             progress_callback: Optional callback for progress updates
@@ -281,16 +333,27 @@ class RAGIndexer:
             if progress_callback:
                 progress_callback("Initializing GraphRAG...")
             
-            logger.info("GraphRAG integration - using simplified entity extraction")
+            # Determine storage backend
+            storage_type = "Neo4j" if self.use_neo4j and self.neo4j_store else "JSON"
+            logger.info(f"GraphRAG integration - using {storage_type} storage")
             
-            if force_rebuild or not self.graph_index:
+            # Handle force rebuild
+            if force_rebuild:
+                if self.use_neo4j and self.neo4j_store:
+                    self.neo4j_store.clear_graph()
                 entities = []
                 relationships = []
                 start_idx = 0
+                self.graph_index = None
             else:
-                entities = list(self.graph_index.get("entities", []))
-                relationships = list(self.graph_index.get("relationships", []))
-                start_idx = self._graph_doc_count
+                if self.graph_index:
+                    entities = list(self.graph_index.get("entities", []))
+                    relationships = list(self.graph_index.get("relationships", []))
+                    start_idx = self._graph_doc_count
+                else:
+                    entities = []
+                    relationships = []
+                    start_idx = 0
             
             if start_idx >= len(self.documents):
                 logger.info("Graph is already up to date with all documents")
@@ -312,6 +375,10 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
             
             sample_docs = new_docs[:min(20, len(new_docs))]
             
+            # Collect new entities and relationships from this batch
+            new_entities = []
+            new_relationships = []
+            
             for i, doc in enumerate(sample_docs):
                 try:
                     if progress_callback and i % 5 == 0:
@@ -323,11 +390,26 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
                     if "{" in content and "}" in content:
                         json_str = content[content.find("{"):content.rfind("}")+1]
                         data = json.loads(json_str)
-                        entities.extend(data.get("entities", []))
-                        relationships.extend(data.get("relationships", []))
+                        extracted_entities = data.get("entities", [])
+                        extracted_relationships = data.get("relationships", [])
+                        
+                        new_entities.extend(extracted_entities)
+                        new_relationships.extend(extracted_relationships)
+                        
+                        # If using Neo4j, add to database immediately
+                        if self.use_neo4j and self.neo4j_store:
+                            source_doc = doc.metadata.get("filename", "unknown")
+                            self.neo4j_store.add_entities(extracted_entities, source_doc)
+                            self.neo4j_store.add_relationships(extracted_relationships, source_doc)
+                            
                 except Exception as e:
                     logger.warning(f"Entity extraction failed for chunk: {e}")
             
+            # Merge with existing entities/relationships
+            entities.extend(new_entities)
+            relationships.extend(new_relationships)
+            
+            # Update local graph_index cache
             self.graph_index = {
                 "entities": list(set(entities)),
                 "relationships": relationships,
@@ -335,15 +417,19 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
             }
             self._graph_doc_count = len(self.documents)
             
-            graph_path = self.index_path / "graph_index.json"
-            with open(graph_path, 'w') as f:
-                json.dump(self.graph_index, f, indent=2)
+            # Only save to JSON file if NOT using Neo4j (Neo4j is the primary storage)
+            if not (self.use_neo4j and self.neo4j_store and self.neo4j_store.connected):
+                graph_path = self.index_path / "graph_index.json"
+                with open(graph_path, 'w') as f:
+                    json.dump(self.graph_index, f, indent=2)
             
             self.graphrag_available = True
-            logger.info(f"✓ Graph index updated: {len(set(entities))} entities, {len(relationships)} relationships")
+            
+            unique_entities = len(set(entities))
+            logger.info(f"✓ Graph index updated ({storage_type}): {unique_entities} entities, {len(relationships)} relationships")
             
             if progress_callback:
-                progress_callback(f"Graph updated: {len(set(entities))} entities")
+                progress_callback(f"Graph updated: {unique_entities} entities")
             
             return True
             
@@ -359,7 +445,15 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
         return []
     
     def graph_search(self, query: str) -> Dict[str, Any]:
-        """Search the knowledge graph for relevant entities and relationships."""
+        """
+        Search the knowledge graph for relevant entities and relationships.
+        Uses Neo4j if enabled, otherwise falls back to JSON-based search.
+        """
+        # Use Neo4j if available and connected
+        if self.use_neo4j and self.neo4j_store and self.neo4j_store.connected:
+            return self.neo4j_store.graph_search(query)
+        
+        # Fallback to JSON-based search
         if not self.graph_index:
             return {"entities": [], "relationships": [], "context": "", "found": False}
         
@@ -556,16 +650,28 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
     
     def get_index_stats(self) -> Dict[str, Any]:
         """Get statistics about the current index."""
-        return {
+        stats = {
             "indexed_files": len(self.indexed_files),
             "total_chunks": len(self.documents),
             "has_vectorstore": self.vectorstore is not None,
             "has_graph": self.graphrag_available,
-            "files": list(self.indexed_files.keys())
+            "files": list(self.indexed_files.keys()),
+            "graph_storage": "neo4j" if self.use_neo4j and self.neo4j_store else "json"
         }
+        
+        # Add Neo4j-specific stats if available
+        if self.use_neo4j and self.neo4j_store and self.neo4j_store.connected:
+            neo4j_stats = self.neo4j_store.get_stats()
+            stats["neo4j_connected"] = True
+            stats["neo4j_entity_count"] = neo4j_stats.get("entity_count", 0)
+            stats["neo4j_relationship_count"] = neo4j_stats.get("relationship_count", 0)
+        else:
+            stats["neo4j_connected"] = False
+        
+        return stats
     
     def clear_index(self):
-        """Clear all indexed data."""
+        """Clear all indexed data including Neo4j graph if enabled."""
         self.vectorstore = None
         self.documents = []
         self.indexed_files = {}
@@ -573,11 +679,15 @@ Return as JSON: {{"entities": ["entity1", "entity2", ...], "relationships": [["e
         self.graphrag_available = False
         self._graph_doc_count = 0
         
+        # Clear Neo4j graph if enabled
+        if self.use_neo4j and self.neo4j_store:
+            self.neo4j_store.clear_graph()
+        
         if self.index_path.exists():
             shutil.rmtree(self.index_path)
             self.index_path.mkdir(exist_ok=True)
         
-        logger.info("Index cleared")
+        logger.info("Index cleared (including Neo4j graph)" if self.use_neo4j else "Index cleared")
     
     def export_index_json(self, output_path: str = None) -> str:
         """

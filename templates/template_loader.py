@@ -2,6 +2,7 @@
 Jinja2 Template Loader for prompt management.
 
 Provides utilities to load and render Jinja2 templates from the templates folder.
+Also supports loading settings from settings.yaml for centralized configuration.
 """
 
 from pathlib import Path
@@ -14,8 +15,18 @@ try:
 except ImportError:
     JINJA2_AVAILABLE = False
 
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
 # Template directory root
 TEMPLATE_ROOT = Path(__file__).parent
+
+# Settings cache
+_settings_cache: Optional[Dict[str, Any]] = None
+_settings_mtime: float = 0
 
 
 class TemplateLoader:
@@ -215,3 +226,78 @@ def get_template_loader() -> Optional[TemplateLoader]:
 def is_jinja2_available() -> bool:
     """Check if Jinja2 is available."""
     return JINJA2_AVAILABLE
+
+
+def is_yaml_available() -> bool:
+    """Check if PyYAML is available."""
+    return YAML_AVAILABLE
+
+
+def get_settings(reload: bool = False) -> Dict[str, Any]:
+    """
+    Load settings from settings.yaml.
+    
+    Settings are cached and only reloaded if the file has been modified
+    or if reload=True is specified.
+    
+    Args:
+        reload: Force reload settings from file
+        
+    Returns:
+        Settings dictionary
+        
+    Raises:
+        ImportError: If PyYAML is not installed
+        FileNotFoundError: If settings.yaml doesn't exist
+    """
+    global _settings_cache, _settings_mtime
+    
+    if not YAML_AVAILABLE:
+        raise ImportError(
+            "PyYAML is required for settings management. "
+            "Please install it: pip install pyyaml"
+        )
+    
+    settings_path = TEMPLATE_ROOT / "settings.yaml"
+    
+    if not settings_path.exists():
+        raise FileNotFoundError(f"Settings file not found: {settings_path}")
+    
+    # Check if file has been modified
+    current_mtime = settings_path.stat().st_mtime
+    
+    if _settings_cache is None or reload or current_mtime > _settings_mtime:
+        with open(settings_path, 'r', encoding='utf-8') as f:
+            _settings_cache = yaml.safe_load(f)
+        _settings_mtime = current_mtime
+    
+    return _settings_cache
+
+
+def get_setting(key_path: str, default: Any = None) -> Any:
+    """
+    Get a specific setting value using dot notation.
+    
+    Args:
+        key_path: Dot-separated path to the setting (e.g., "rag.chunk_size")
+        default: Default value if setting not found
+        
+    Returns:
+        Setting value or default
+        
+    Example:
+        chunk_size = get_setting("rag.chunk_size", 1000)
+        temperature = get_setting("llm.temperature", 0.7)
+    """
+    try:
+        settings = get_settings()
+        keys = key_path.split(".")
+        value = settings
+        for key in keys:
+            if isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                return default
+        return value
+    except (ImportError, FileNotFoundError):
+        return default

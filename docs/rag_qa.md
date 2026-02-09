@@ -4,8 +4,8 @@
 
 > 主要代码位置：
 >
->- UI 入口：`app.py`
->- 编排与意图路由：`src/agents/orchestrator.py`
+>- API 入口：`api/routes/chat.py`, `api/routes/documents.py`
+>- 编排与意图路由：`src/core/orchestrator.py`
 >- RAG Chain：`src/rag/chain.py`
 >- 索引与检索：`src/rag/indexer.py`
 >- 文档解析：`src/rag/parser.py`
@@ -51,7 +51,7 @@ RAG Q&A 的整体调用链路可以概括为：
 
 ## 3. Orchestrator 的 RAG Q&A 节点做了什么
 
-代码位置：`src/agents/orchestrator.py` → `OrchestratorAgent._rag_qa_node()`
+代码位置：`src/core/orchestrator.py` → `OrchestratorAgent._rag_qa_node()`
 
 该节点主要职责：
 

@@ -46,10 +46,14 @@
   - 根据需求内容生成 Mermaid 图
 
 ### GraphRAG 说明（本项目实现）
-本项目的 GraphRAG 是“轻量实现”：
+本项目的 GraphRAG 支持两种存储后端：
 
+- **Neo4j 图数据库**（推荐）：完整的图数据库功能，支持复杂图查询
+- **JSON 文件存储**（默认）：轻量级存储，无需额外依赖
+
+**核心功能**：
 - **图谱构建入口**：`RAGIndexer.build_graph_index()`
-- **图谱存储**：`rag_index/graph_index.json`
+- **图谱存储**：Neo4j 数据库 或 `rag_index/graph_index.json`
 - **抽取方式**：调用 LLM 从文本抽取
   - `entities`: 实体列表（概念、技术、组织、需求要点等）
   - `relationships`: 三元组列表 `[(entity1, relation, entity2), ...]`
@@ -139,6 +143,21 @@ pip install -r requirements.txt
 
 （可选）如果你启用 LangSmith Trace，还需要配置 `LANGCHAIN_TRACING_V2`、`LANGCHAIN_API_KEY`、`LANGCHAIN_PROJECT` 等。
 
+### 2.1) 配置 Neo4j（可选，推荐）
+如果你希望使用 Neo4j 图数据库存储知识图谱：
+
+1. 下载并安装 [Neo4j Desktop](https://neo4j.com/download/)
+2. 创建新的 DBMS 并启动
+3. 在 `.env` 文件中添加：
+```bash
+NEO4J_URI=neo4j://127.0.0.1:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your_password
+NEO4J_ENABLED=true
+```
+
+如果不配置 Neo4j，系统将自动使用 JSON 文件存储图谱。
+
 ### 3) 启动应用
 ```bash
 streamlit run app.py
@@ -173,7 +192,7 @@ streamlit run app.py
 ## 常见问题
 - **首次运行会慢**：可能在下载 embedding 模型（`sentence-transformers/all-MiniLM-L6-v2`）
 - **Docling 不可用**：如果未安装或环境不支持，会自动回退到基础解析器
-- **图谱不是图数据库**：本项目图谱存储为 JSON，适合轻量检索增强；不是完整的图计算/图查询平台
+- **Neo4j 连接失败**：检查 Neo4j 服务是否启动，以及 `.env` 中的连接信息是否正确；系统会自动回退到 JSON 存储
 
 ## 许可证
 如果你准备开源发布，请在此补充许可证（如 MIT/Apache-2.0）。

@@ -3,7 +3,6 @@ langchain-openai==1.1.7
 langchain-community==0.4.1
 langgraph==1.0.5
 faiss-cpu==1.13.2
-streamlit==1.52.2
 openai>=1.109.1
 langsmith>=0.3.45
 python-dotenv==1.0.1
@@ -21,3 +20,13 @@ langchain-huggingface>=0.1.0
 sentence-transformers>=3.0.0
 reportlab>=4.0.0
 Jinja2>=3.1.0
+PyYAML>=6.0.0
+neo4j>=5.0.0
+mem0ai>=0.1.0
+chromadb>=0.4.0
+requests>=2.31.0
+langfuse>=2.0.0
+# FastAPI Backend
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6

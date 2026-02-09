@@ -9,16 +9,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Core modules
-from src.agents.orchestrator import OrchestratorAgent
-from src.modules.roles import select_role_prompt, get_available_roles
-from src.modules.memory import EnhancedConversationMemory
-from src.modules.requirements_generator import RequirementsGenerator
+from src.core.orchestrator import OrchestratorAgent
+from src.requirements.roles import select_role_prompt, get_available_roles
+from src.memory import EnhancedConversationMemory
+from src.requirements.generator import RequirementsGenerator
 
-# New refactored modules
+# Utility modules
 from src.utils import get_logger, setup_logging
 from src.utils.exceptions import RAAAError, ConfigurationError, ParsingError
 from src.rag import DocumentParser, RAGIndexer, AgenticRAGChain, create_rag_system
-from src.modules.research import PlannerAgent, SearcherAgent, WriterAgent, PDFReportGenerator
+from src.research import PlannerAgent, SearcherAgent, WriterAgent, PDFReportGenerator
 from src.tools.chart import MermaidChartTool, should_generate_chart, should_auto_generate_diagram
 
 def test_utils_module():
