@@ -84,7 +84,7 @@ class EnhancedConversationMemory:
     def _init_mem0(self):
         """Initialize mem0 persistent memory store."""
         try:
-            from modules.mem0_memory import get_mem0_store
+            from memory.mem0_adapter import get_mem0_store
             self.mem0_store = get_mem0_store()
             if self.mem0_store.is_available():
                 print("Mem0 persistent memory enabled")

@@ -69,14 +69,37 @@ RequirementAgent/
 │   ├── package.json
 │   └── ...
 │
-├── templates/                    # Jinja2 模板
-│   └── roles/                    # 角色提示词模板
+├── templates/                    # Jinja2 模板与配置
+│   ├── __init__.py               # 模板模块入口
+│   ├── template_loader.py        # 模板加载器（支持 Jinja2 和 YAML）
+│   ├── settings.yaml             # 集中参数配置（LLM/RAG/深度调研等）
+│   ├── roles/                    # 角色提示词模板
+│   │   ├── requirements_analyst.j2
+│   │   ├── software_architect.j2
+│   │   ├── software_developer.j2
+│   │   └── test_engineer.j2
+│   ├── system/                   # 系统提示词模板
+│   │   ├── intent_detection.j2
+│   │   ├── mixed_intent_detection.j2
+│   │   ├── general_chat.j2
+│   │   ├── rag_evaluation.j2
+│   │   ├── rag_answer.j2
+│   │   └── query_restatement.j2
+│   ├── research/                 # 调研提示词模板
+│   │   ├── planner.j2
+│   │   ├── synthesizer.j2
+│   │   └── report_writer.j2
+│   └── rag/                      # RAG 提示词模板
 │
 ├── docs/                         # 项目文档
 │   ├── DeepResearch.md           # 深度调研功能说明
 │   ├── rag_qa.md                 # RAG 问答流程说明
 │   ├── memory_management.md      # 记忆管理说明
 │   ├── graph_construction.md     # 知识图谱构建说明
+│   ├── mermaid_diagram_pipeline.md # Mermaid 图表构建流程
+│   ├── frontend.md               # 前端架构说明
+│   ├── interview_intro.md        # 面试项目介绍
+│   ├── resume.md                 # 简历项目描述
 │   └── project_structure.md      # 项目结构说明（本文档）
 │
 ├── reports/                      # 生成的报告输出目录
@@ -114,6 +137,11 @@ RequirementAgent/
 - **职责**：根据用户角色生成需求文档
 - **主要类**：`RequirementsGenerator`
 - **依赖**：config, templates
+
+### 9. `templates/` - 模板与配置
+- **职责**：集中管理提示词模板和可调参数
+- **主要文件**：`template_loader.py`, `settings.yaml`
+- **子目录**：`roles/`, `system/`, `research/`, `rag/`
 
 ### 6. `src/integrations/` - 外部集成
 - **职责**：与外部服务（如 LangFuse）的集成

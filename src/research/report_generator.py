@@ -80,7 +80,12 @@ class AcademicReportGenerator:
         
         # 已下载图片的缓存（URL -> 本地路径）
         self._downloaded_images = {}
+        self._failed_web_screenshots = set()
         self._reset_counters()
+
+        # Mermaid CLI availability cache
+        self._mmdc_available: Optional[bool] = None
+        self._mmdc_version: Optional[str] = None
         
         # 注册中文字体
         self._chinese_fonts_available = self._register_chinese_fonts()
@@ -348,10 +353,19 @@ class AcademicReportGenerator:
         return flowables
     
     def _create_figure_with_caption(self, img_path: str, title: str = "", 
-                                      source: str = "", is_chinese: bool = False) -> List[Any]:
+                                      source: str = "", is_chinese: bool = False,
+                                      diagram_type: str = "", show_caption: bool = False) -> List[Any]:
         """
-        Create a figure with academic-style caption below the image.
+        Create a figure, optionally with academic-style caption below the image.
         Format: Figure X. Title (Source: source) / 图X Title
+        
+        Args:
+            img_path: Path to the image file
+            title: Figure title/description
+            source: Source attribution
+            is_chinese: Whether to use Chinese formatting
+            diagram_type: Type of diagram for dynamic sizing (timeline, gantt, mindmap get larger)
+            show_caption: Whether to show caption below the image (default False)
         """
         from reportlab.platypus import Image, Paragraph, Spacer
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -365,13 +379,38 @@ class AcademicReportGenerator:
         try:
             img = Image(img_path)
             
-            max_width = 5.0 * inch
-            max_height = 3.5 * inch
+            # 根据图表类型动态调整尺寸
+            # 内容较多的图表类型使用更大尺寸，但不超过 A4 可用区域
+            diagram_type_lower = diagram_type.lower() if diagram_type else ""
+            title_lower = title.lower() if title else ""
+            
+            # 检测是否为内容较多的图表类型
+            large_diagram_types = [
+                'timeline', 'gantt', 'mindmap', 'flowchart', 'sequence', 'class', 'er',
+                'gitgraph', 'sankey', 'architecture', 'c4', 'journey', 'requirement', 'block'
+            ]
+            is_large_diagram = any(t in diagram_type_lower or t in title_lower for t in large_diagram_types)
+            
+            if is_large_diagram:
+                # 大型图表：最大 6.5 x 8.0 英寸（接近 A4 可用区域）
+                max_width = 6.5 * inch
+                max_height = 8.0 * inch
+            else:
+                # 普通图表：5.0 x 4.0 英寸
+                max_width = 5.5 * inch
+                max_height = 4.5 * inch
             
             aspect = img.imageWidth / img.imageHeight
+            
+            # 先按宽度缩放
             if img.imageWidth > max_width:
                 img.drawWidth = max_width
                 img.drawHeight = max_width / aspect
+            else:
+                img.drawWidth = img.imageWidth
+                img.drawHeight = img.imageHeight
+            
+            # 再检查高度限制
             if img.drawHeight > max_height:
                 img.drawHeight = max_height
                 img.drawWidth = max_height * aspect
@@ -380,36 +419,41 @@ class AcademicReportGenerator:
             flowables.append(Spacer(1, 6))
             flowables.append(img)
             
-            styles = getSampleStyleSheet()
-            fig_num = self._next_figure_num()
-            
-            if is_chinese:
-                caption_text = f"<b>图{fig_num}</b>"
-                if title:
-                    caption_text += f" {title}"
-                if source and source != 'Unknown':
-                    caption_text += f"（来源：{source}）"
+            # 只在 show_caption=True 时显示题注
+            if show_caption:
+                styles = getSampleStyleSheet()
+                fig_num = self._next_figure_num()
+                
+                if is_chinese:
+                    caption_text = f"<b>图{fig_num}</b>"
+                    if title:
+                        caption_text += f" {title}"
+                    if source and source != 'Unknown':
+                        caption_text += f"（来源：{source}）"
+                else:
+                    caption_text = f"<b>Figure {fig_num}.</b>"
+                    if title:
+                        caption_text += f" {title}"
+                    if source:
+                        caption_text += f" <i>(Source: {source})</i>"
+                
+                caption_style = ParagraphStyle(
+                    'FigureCaption',
+                    parent=styles['Normal'],
+                    fontSize=9,
+                    alignment=TA_CENTER,
+                    textColor=colors.HexColor('#333333'),
+                    spaceBefore=4,
+                    spaceAfter=8,
+                    fontName=font_caption
+                )
+                caption_text = caption_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                caption_text = caption_text.replace('&lt;b&gt;', '<b>').replace('&lt;/b&gt;', '</b>')
+                caption_text = caption_text.replace('&lt;i&gt;', '<i>').replace('&lt;/i&gt;', '</i>')
+                flowables.append(Paragraph(caption_text, caption_style))
             else:
-                caption_text = f"<b>Figure {fig_num}.</b>"
-                if title:
-                    caption_text += f" {title}"
-                if source:
-                    caption_text += f" <i>(Source: {source})</i>"
-            
-            caption_style = ParagraphStyle(
-                'FigureCaption',
-                parent=styles['Normal'],
-                fontSize=9,
-                alignment=TA_CENTER,
-                textColor=colors.HexColor('#333333'),
-                spaceBefore=4,
-                spaceAfter=8,
-                fontName=font_caption
-            )
-            caption_text = caption_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            caption_text = caption_text.replace('&lt;b&gt;', '<b>').replace('&lt;/b&gt;', '</b>')
-            caption_text = caption_text.replace('&lt;i&gt;', '<i>').replace('&lt;/i&gt;', '</i>')
-            flowables.append(Paragraph(caption_text, caption_style))
+                # 不显示题注时，只添加一点间距
+                flowables.append(Spacer(1, 8))
             
         except Exception as e:
             logger.warning(f"Failed to create figure flowable: {e}")
@@ -547,7 +591,8 @@ class AcademicReportGenerator:
                     alignment=TA_JUSTIFY,
                     spaceAfter=0,
                     firstLineIndent=24, # 两字符缩进
-                    fontName=font_body
+                    fontName=font_body,
+                    wordWrap='CJK'      # 中英文混排时正确换行，避免大空格
                 ),
                 'body_first': ParagraphStyle(
                     'BodyTextFirst',
@@ -557,7 +602,8 @@ class AcademicReportGenerator:
                     alignment=TA_JUSTIFY,
                     spaceAfter=0,
                     firstLineIndent=24,
-                    fontName=font_body
+                    fontName=font_body,
+                    wordWrap='CJK'      # 中英文混排时正确换行，避免大空格
                 ),
                 'bullet': ParagraphStyle(
                     'BulletPoint',
@@ -566,7 +612,8 @@ class AcademicReportGenerator:
                     leading=22,
                     leftIndent=24,
                     spaceAfter=0,
-                    fontName=font_body
+                    fontName=font_body,
+                    wordWrap='CJK'
                 ),
                 'numbered': ParagraphStyle(
                     'NumberedItem',
@@ -575,7 +622,8 @@ class AcademicReportGenerator:
                     leading=22,
                     leftIndent=24,
                     spaceAfter=0,
-                    fontName=font_body
+                    fontName=font_body,
+                    wordWrap='CJK'
                 ),
                 'reference': ParagraphStyle(
                     'Reference',
@@ -585,7 +633,8 @@ class AcademicReportGenerator:
                     leftIndent=18,
                     firstLineIndent=-18,
                     spaceAfter=3,
-                    fontName=font_body
+                    fontName=font_body,
+                    wordWrap='CJK'
                 ),
                 'conclusion': ParagraphStyle(
                     'Conclusion',
@@ -746,6 +795,386 @@ class AcademicReportGenerator:
         logger.info(f"Prepared {len(downloaded)} images for report")
         return downloaded
     
+    def _download_web_screenshot(self, url: str) -> Optional[str]:
+        """
+        Download a web screenshot/image from URL and cache it locally.
+        
+        Args:
+            url: URL of the image or screenshot to download
+            
+        Returns:
+            Path to the cached image file, or None if download failed
+        """
+        import requests
+        import hashlib
+        from PIL import Image
+        
+        # 已经失败过的 URL 直接跳过，减少重复请求
+        if url in self._failed_web_screenshots:
+            return None
+
+        # 基于扩展名的快速过滤（避免下载 PDF/HTML 等）
+        lower_url = url.lower().split('?', 1)[0].split('#', 1)[0]
+        if lower_url.endswith('.pdf'):
+            logger.warning(f"URL does not appear to be an image (pdf): {url}")
+            self._failed_web_screenshots.add(url)
+            return None
+
+        # 检查缓存
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        cached_path = self.image_cache_dir / f"web_screenshot_{url_hash}.png"
+        
+        if cached_path.exists():
+            logger.info(f"Using cached web screenshot: {cached_path}")
+            return str(cached_path)
+        
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': url.rsplit('/', 1)[0] + '/' if '/' in url else url
+            }
+            response = requests.get(url, headers=headers, timeout=30, stream=True)
+            response.raise_for_status()
+            
+            # 验证是图片内容
+            content_type = response.headers.get('Content-Type', '')
+            if not any(t in content_type.lower() for t in ['image', 'png', 'jpeg', 'jpg', 'gif', 'webp']):
+                logger.warning(f"URL does not appear to be an image: {content_type}")
+                self._failed_web_screenshots.add(url)
+                return None
+            
+            # 保存并优化图片
+            img = Image.open(io.BytesIO(response.content))
+            
+            # 转换为 RGB 模式
+            if img.mode in ('RGBA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'RGBA':
+                    background.paste(img, mask=img.split()[3])
+                else:
+                    background.paste(img)
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # 限制最大尺寸
+            max_width, max_height = 1200, 900
+            if img.width > max_width or img.height > max_height:
+                img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            
+            img.save(str(cached_path), "PNG", optimize=True)
+            logger.info(f"Downloaded web screenshot: {url} -> {cached_path}")
+            return str(cached_path)
+            
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout downloading web screenshot: {url}")
+            self._failed_web_screenshots.add(url)
+            # 尝试使用 Playwright 截图作为后备
+            return self._capture_webpage_screenshot(url, cached_path)
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to download web screenshot {url}: {e}")
+            self._failed_web_screenshots.add(url)
+            # 尝试使用 Playwright 截图作为后备
+            return self._capture_webpage_screenshot(url, cached_path)
+        except Exception as e:
+            logger.warning(f"Error processing web screenshot {url}: {e}")
+            self._failed_web_screenshots.add(url)
+            return None
+
+    def _capture_webpage_screenshot(self, url: str, output_path: Path) -> Optional[str]:
+        """
+        Capture a screenshot of a webpage using Playwright as fallback.
+        Handles both sync and async contexts automatically.
+        
+        Args:
+            url: URL of the webpage to capture
+            output_path: Path to save the screenshot
+            
+        Returns:
+            Path to the screenshot file, or None if capture failed
+        """
+        # 检查是否已经缓存了 Playwright 可用性
+        if not hasattr(self, '_playwright_available'):
+            self._playwright_available = None
+        
+        # 如果已知不可用，直接返回
+        if self._playwright_available is False:
+            return None
+        
+        try:
+            import playwright
+            self._playwright_available = True
+        except ImportError:
+            if self._playwright_available is None:
+                logger.info("Playwright not installed. Install with: pip install playwright && playwright install chromium")
+            self._playwright_available = False
+            return None
+        
+        import asyncio
+        
+        async def _async_capture():
+            from playwright.async_api import async_playwright
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(viewport={'width': 1280, 'height': 720})
+                await page.goto(url, timeout=30000, wait_until='domcontentloaded')
+                await page.wait_for_timeout(1000)  # 等待页面渲染
+                await page.screenshot(path=str(output_path), full_page=False)
+                await browser.close()
+        
+        try:
+            # 检查是否在 asyncio 事件循环中
+            try:
+                loop = asyncio.get_running_loop()
+                # 在事件循环中，使用 nest_asyncio 或在新线程中运行
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, _async_capture())
+                    future.result(timeout=60)
+            except RuntimeError:
+                # 不在事件循环中，直接运行
+                asyncio.run(_async_capture())
+            
+            if output_path.exists():
+                logger.info(f"Captured webpage screenshot: {url} -> {output_path}")
+                return str(output_path)
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Failed to capture webpage screenshot {url}: {e}")
+            return None
+    
+    def _generate_placeholder_image(self, text: str, output_path: Path, url: str = None) -> Optional[str]:
+        """
+        Generate a placeholder image with text when image download fails.
+        
+        Args:
+            text: Text to display on the placeholder
+            output_path: Path to save the placeholder image
+            url: Optional URL to display on the placeholder
+            
+        Returns:
+            Path to the placeholder image, or None if generation failed
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            
+            # 创建灰色背景的占位图
+            width, height = 600, 340 if url else 300
+            img = Image.new('RGB', (width, height), color=(240, 240, 240))
+            draw = ImageDraw.Draw(img)
+            
+            # 绘制边框
+            draw.rectangle([5, 5, width-6, height-6], outline=(200, 200, 200), width=2)
+            
+            # 尝试使用系统字体，否则使用默认字体
+            try:
+                font = ImageFont.truetype("arial.ttf", 16)
+                small_font = ImageFont.truetype("arial.ttf", 12)
+                url_font = ImageFont.truetype("arial.ttf", 10)
+            except:
+                font = ImageFont.load_default()
+                small_font = font
+                url_font = font
+            
+            # 绘制图标和文字
+            icon_text = "[Image Unavailable]"
+            draw.text((width//2, height//2 - 50), icon_text, fill=(150, 150, 150), font=font, anchor="mm")
+            
+            # 截断过长的文本
+            display_text = text[:80] + "..." if len(text) > 80 else text
+            draw.text((width//2, height//2 - 20), display_text, fill=(120, 120, 120), font=small_font, anchor="mm")
+            
+            # 显示 URL（如果提供）
+            if url:
+                # 截断过长的 URL
+                display_url = url[:90] + "..." if len(url) > 90 else url
+                draw.text((width//2, height//2 + 20), "Source URL:", fill=(100, 100, 100), font=small_font, anchor="mm")
+                draw.text((width//2, height//2 + 45), display_url, fill=(70, 130, 180), font=url_font, anchor="mm")
+            
+            img.save(str(output_path), "PNG")
+            logger.info(f"Generated placeholder image: {output_path}")
+            return str(output_path)
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate placeholder image: {e}")
+            return None
+
+    def _render_latex_to_image(self, latex: str, display_mode: bool = False) -> Optional[str]:
+        """
+        Render LaTeX formula to PNG image using matplotlib.
+        
+        Args:
+            latex: LaTeX formula string (without $ delimiters)
+            display_mode: If True, render as display math (larger, centered)
+            
+        Returns:
+            Path to the rendered image, or None if rendering failed
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            from matplotlib import mathtext
+            
+            # 生成唯一文件名
+            formula_hash = hashlib.md5(latex.encode()).hexdigest()[:12]
+            img_path = self.image_cache_dir / f"formula_{formula_hash}.png"
+            
+            # 如果已缓存，直接返回
+            if img_path.exists():
+                return str(img_path)
+            
+            # 设置字体大小
+            fontsize = 14 if display_mode else 12
+            
+            # 创建图形
+            fig, ax = plt.subplots(figsize=(0.1, 0.1))
+            ax.axis('off')
+            
+            # 渲染公式
+            wrapped_latex = f"${latex}$"
+            text = ax.text(0.5, 0.5, wrapped_latex, fontsize=fontsize,
+                          ha='center', va='center', transform=ax.transAxes)
+            
+            # 调整图形大小以适应公式
+            fig.canvas.draw()
+            bbox = text.get_window_extent(renderer=fig.canvas.get_renderer())
+            bbox_inches = bbox.transformed(fig.dpi_scale_trans.inverted())
+            
+            # 添加边距
+            pad = 0.1
+            fig.set_size_inches(bbox_inches.width + pad, bbox_inches.height + pad)
+            
+            # 保存图片
+            fig.savefig(str(img_path), dpi=150, bbox_inches='tight', 
+                       pad_inches=0.05, transparent=False, facecolor='white')
+            plt.close(fig)
+            
+            logger.info(f"Rendered LaTeX formula: {img_path}")
+            return str(img_path)
+            
+        except Exception as e:
+            logger.warning(f"Failed to render LaTeX formula: {e}")
+            return None
+    
+    def _process_latex_in_text(self, text: str) -> Tuple[str, List[Dict]]:
+        """
+        Extract LaTeX formulas from text and return processed text with placeholders.
+        
+        Supports:
+            - Inline math: $...$
+            - Display math: $$...$$
+            - LaTeX environments: \\[...\\], \\(...\\)
+        
+        Args:
+            text: Text containing LaTeX formulas
+            
+        Returns:
+            Tuple of (processed_text, list of formula info dicts)
+        """
+        formulas = []
+        
+        # 匹配显示公式 $$...$$ 或 \[...\]
+        display_pattern = r'\$\$(.+?)\$\$|\\\[(.+?)\\\]'
+        # 匹配行内公式 $...$ 或 \(...\)
+        inline_pattern = r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)|\\\((.+?)\\\)'
+        
+        # 先处理显示公式
+        def replace_display(match):
+            formula = match.group(1) or match.group(2)
+            if formula:
+                idx = len(formulas)
+                formulas.append({'latex': formula.strip(), 'display': True, 'placeholder': f'[[FORMULA_DISPLAY_{idx}]]'})
+                return f'[[FORMULA_DISPLAY_{idx}]]'
+            return match.group(0)
+        
+        text = re.sub(display_pattern, replace_display, text, flags=re.DOTALL)
+        
+        # 再处理行内公式
+        def replace_inline(match):
+            formula = match.group(1) or match.group(2)
+            if formula:
+                idx = len(formulas)
+                formulas.append({'latex': formula.strip(), 'display': False, 'placeholder': f'[[FORMULA_INLINE_{idx}]]'})
+                return f'[[FORMULA_INLINE_{idx}]]'
+            return match.group(0)
+        
+        text = re.sub(inline_pattern, replace_inline, text)
+        
+        return text, formulas
+    
+    def _add_word_formula(self, paragraph, latex: str) -> bool:
+        """
+        Add a LaTeX formula to a Word paragraph using OMML (Office Math Markup Language).
+        
+        Args:
+            paragraph: python-docx paragraph object
+            latex: LaTeX formula string
+            
+        Returns:
+            True if formula was added successfully
+        """
+        try:
+            from latex2mathml import latex_to_mathml
+            from lxml import etree
+            
+            # 转换 LaTeX 到 MathML
+            mathml = latex_to_mathml(latex)
+            
+            # MathML 转 OMML (Office Math Markup Language)
+            # 使用 Word 的 OMML 命名空间
+            omml_ns = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+            
+            # 解析 MathML
+            mathml_tree = etree.fromstring(mathml.encode())
+            
+            # 创建 OMML oMath 元素
+            # 简化处理：将 MathML 作为文本插入，Word 会尝试解析
+            # 更好的方案是使用完整的 MathML 到 OMML 转换
+            run = paragraph.add_run(f" {latex} ")
+            run.italic = True
+            
+            logger.debug(f"Added formula to Word: {latex[:50]}...")
+            return True
+            
+        except ImportError:
+            # 如果没有 latex2mathml，使用图片方式
+            logger.debug("latex2mathml not available, using image fallback for Word formula")
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to add Word formula: {e}")
+            return False
+    
+    def _check_mmdc_available(self) -> bool:
+        """Check mermaid-cli (mmdc) availability once and cache the result."""
+        if self._mmdc_available is not None:
+            return self._mmdc_available
+
+        import subprocess
+        try:
+            result = subprocess.run(['mmdc', '--version'], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                self._mmdc_available = True
+                try:
+                    self._mmdc_version = (result.stdout.decode(errors='ignore') or '').strip() or None
+                except Exception:
+                    self._mmdc_version = None
+                return True
+            self._mmdc_available = False
+            return False
+        except FileNotFoundError:
+            self._mmdc_available = False
+            return False
+        except subprocess.TimeoutExpired:
+            self._mmdc_available = False
+            return False
+        except Exception:
+            self._mmdc_available = False
+            return False
+    
     def _distribute_images_to_sections(self, images: List[Dict], sections: List[str]) -> Dict[str, List[Dict]]:
         """Distribute images evenly across major sections."""
         distribution = {}
@@ -786,13 +1215,40 @@ class AcademicReportGenerator:
             chart_tool = MermaidChartTool()
             
             type_mapping = {
+                # Core diagrams
                 'flowchart': 'flowchart',
                 'sequence': 'sequence',
+                'sequencediagram': 'sequence',
                 'class': 'class',
+                'classdiagram': 'class',
                 'state': 'flowchart',
+                'statediagram': 'flowchart',
+                'statediagram-v2': 'flowchart',
                 'er': 'er',
+                'erdiagram': 'er',
                 'gantt': 'flowchart',
+                # Data visualization
                 'pie': 'flowchart',
+                'xychart-beta': 'flowchart',
+                'xychart': 'flowchart',
+                'quadrantchart': 'flowchart',
+                'sankey-beta': 'flowchart',
+                'sankey': 'flowchart',
+                # Conceptual & hierarchical
+                'mindmap': 'flowchart',
+                'timeline': 'flowchart',
+                'journey': 'flowchart',
+                # Technical & architecture
+                'gitgraph': 'flowchart',
+                'c4context': 'flowchart',
+                'c4container': 'flowchart',
+                'c4component': 'flowchart',
+                'c4dynamic': 'flowchart',
+                'c4deployment': 'flowchart',
+                'architecture-beta': 'flowchart',
+                'requirementdiagram': 'flowchart',
+                'packet-beta': 'flowchart',
+                'block-beta': 'flowchart',
             }
             diagram_type = type_mapping.get(mermaid_type.lower(), 'flowchart')
             
@@ -805,10 +1261,11 @@ class AcademicReportGenerator:
             else:
                 clean_code = mermaid_code.strip()
             
-            img_data = self._try_render_with_fix(clean_code)
+            img_data, final_code = self._try_render_with_fix(clean_code)
             
             if not img_data:
                 logger.warning(f"All Mermaid render methods failed for: {description[:30]}...")
+                # 返回 None，调用方可以决定是否显示代码块
                 return None
             
             try:
@@ -863,6 +1320,128 @@ class AcademicReportGenerator:
         if match:
             return match.group(1).strip(), match.group(2).strip()
         return None
+
+    def _is_references_heading(self, heading_text: str) -> bool:
+        """
+        检测标题是否为参考文献标题。
+        
+        支持多种格式：
+        - "References", "参考文献"
+        - "10. References", "10. 参考文献"
+        - "References and Sources"
+        """
+        text = (heading_text or "").strip().lower()
+        if not text:
+            return False
+
+        # 移除开头的数字编号（如 "10. References" -> "references"）
+        text_without_number = re.sub(r'^\d+[\.\、\s]+', '', text).strip()
+
+        # strict matching to avoid false positives like "Reference Architecture"
+        allowed = {
+            "references",
+            "reference",
+            "bibliography",
+            "works cited",
+            "references and sources",
+            "参考文献",
+            "参考资料",
+            "引用文献",
+            "文献引用",
+        }
+        if text in allowed or text_without_number in allowed:
+            return True
+
+        if text.startswith("references ") or text.startswith("references:"):
+            return True
+        if text_without_number.startswith("references ") or text_without_number.startswith("references:"):
+            return True
+        if text.startswith("bibliography ") or text.startswith("bibliography:"):
+            return True
+        
+        # 检测 "Key Sources" 等子标题（这些也应该被移动到参考文献部分）
+        if text_without_number in {"key sources", "sources", "cited sources", "主要来源", "来源"}:
+            return True
+            
+        return False
+
+    def _move_references_to_end(self, content: str) -> str:
+        if not content:
+            return content
+
+        lines = content.splitlines()
+        ref_blocks: List[List[str]] = []
+        ref_heading_level = None
+        ref_heading_line = None
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            m = re.match(r'^(#{1,6})\s+(.+?)\s*$', line.strip())
+            if not m:
+                i += 1
+                continue
+
+            heading_level = len(m.group(1))
+            heading_text_raw = m.group(2).strip()
+            if not self._is_references_heading(heading_text_raw):
+                i += 1
+                continue
+
+            # 记录第一个参考文献标题
+            if ref_heading_line is None:
+                ref_heading_level = heading_level
+                ref_heading_line = line
+
+            start = i
+            j = i + 1
+            while j < len(lines):
+                m2 = re.match(r'^(#{1,6})\s+(.+?)\s*$', lines[j].strip())
+                if m2 and len(m2.group(1)) <= heading_level:
+                    break
+                j += 1
+
+            # 只收集内容行（跳过标题行，因为我们只保留一个标题）
+            ref_blocks.append(lines[start+1:j])
+            del lines[start:j]
+            i = start
+
+        if not ref_blocks:
+            return content
+
+        if lines and lines[-1].strip() != '':
+            lines.append('')
+            lines.append('')
+        elif len(lines) >= 2 and (lines[-1].strip() != '' or lines[-2].strip() != ''):
+            lines.append('')
+
+        # 合并所有参考文献内容，去重
+        merged: List[str] = []
+        seen_refs = set()
+        
+        # 添加统一的参考文献标题
+        if ref_heading_line:
+            merged.append(ref_heading_line)
+            merged.append('')
+        
+        for block in ref_blocks:
+            for line in block:
+                stripped = line.strip()
+                # 跳过空行和重复的引用
+                if not stripped:
+                    if merged and merged[-1].strip() != '':
+                        merged.append('')
+                    continue
+                # 去重：基于内容的前100个字符判断
+                ref_key = stripped[:100].lower()
+                if ref_key not in seen_refs:
+                    seen_refs.add(ref_key)
+                    merged.append(line)
+
+        while merged and merged[0].strip() == '':
+            merged.pop(0)
+
+        lines.extend(merged)
+        return '\n'.join(lines).strip() + '\n'
     
     def _fix_mermaid_syntax(self, mermaid_code: str) -> str:
         """
@@ -895,6 +1474,39 @@ class AcademicReportGenerator:
             fixed = re.sub(r'(\w)\s*->\s*(\w)', r'\1 --> \2', fixed)
             fixed = re.sub(r'(\])\s*->\s*(\w)', r'\1 --> \2', fixed)
             fixed = re.sub(r'(\))\s*->\s*(\w)', r'\1 --> \2', fixed)
+            # handle invalid edge-label forms like A ->[label] B (common LLM mistake)
+            fixed = re.sub(r'->\s*(?=\[)', '-->', fixed)
+            fixed = re.sub(r'->\s*(?=\()', '-->', fixed)
+            fixed = re.sub(r'->\s*(?=/)', '-->', fixed)
+
+        def _clean_edge_label_text(label: str) -> str:
+            label = label.replace('\n', ' ')
+            label = label.replace('"', '').replace("'", '')
+            label = label.replace('|', ' ')
+            label = label.replace('[', '').replace(']', '')
+            label = label.replace('(', '').replace(')', '')
+            label = re.sub(r'\s+', ' ', label).strip()
+            if len(label) > 60:
+                label = label[:57] + '...'
+            return label
+
+        fixed = re.sub(
+            r'--\>\s*\[([^\]\n]{1,200})\]',
+            lambda m: f"-->|{_clean_edge_label_text(m.group(1))}|",
+            fixed,
+        )
+        fixed = re.sub(
+            r'--\>\s*\(([^\)\n]{1,200})\)',
+            lambda m: f"-->|{_clean_edge_label_text(m.group(1))}|",
+            fixed,
+        )
+        fixed = re.sub(
+            r'--\>\s*/([^/\n]{1,200})/',
+            lambda m: f"-->|{_clean_edge_label_text(m.group(1))}|",
+            fixed,
+        )
+        fixed = re.sub(r'--\>\s*\]', '-->', fixed)
+        fixed = re.sub(r'--\>\s*\)', '-->', fixed)
         
         # 修复多行节点标签
         fixed = re.sub(r'\[\s*\n\s*', '[', fixed)
@@ -923,9 +1535,12 @@ class AcademicReportGenerator:
         
         fixed = re.sub(r'(\[)([^\]]+)(\])', clean_node_label, fixed)
         
-        # 移除 Markdown 格式标记
+        # 移除 Markdown 格式标记（保护 Mermaid 的 [*] 语法不被破坏）
+        _star_placeholder = '__MERMAID_STAR__'
+        fixed = fixed.replace('[*]', f'[{_star_placeholder}]')
         fixed = re.sub(r'\*\*([^*]+)\*\*', r'\1', fixed)
         fixed = re.sub(r'\*([^*]+)\*', r'\1', fixed)
+        fixed = fixed.replace(f'[{_star_placeholder}]', '[*]')
         
         # 移除除 <br/> 以外的 HTML 标签
         fixed = re.sub(r'<(?!br/)([^>]+)>', '', fixed)
@@ -946,49 +1561,244 @@ class AcademicReportGenerator:
             fixed = re.sub(r'\{([^}]*)\n([^}]*)\}', 
                           lambda m: '{' + m.group(1).replace('\n', ' ') + m.group(2) + '}', fixed)
         
-        # 关键修复：移除中文字符（Kroki/mermaid.ink 无法渲染中文）
-        # 对于 quadrantChart, pie 等使用引号包裹标签的图表类型，替换中文为拼音/英文
-        if any(ord(ch) > 0x4e00 for ch in fixed):
-            # 替换引号内的中文文本
-            def replace_chinese_in_quotes(match):
-                quote = match.group(1)
-                text = match.group(2)
-                # 如果包含中文，尝试保留英文部分
-                if any('\u4e00' <= ch <= '\u9fff' for ch in text):
-                    # 提取英文部分
-                    english_parts = re.findall(r'[a-zA-Z0-9\s\-_.]+', text)
-                    if english_parts:
-                        return f'{quote}{"".join(english_parts).strip()}{quote}'
-                    else:
-                        return f'{quote}Item{quote}'
+        # 替换中文标点为英文标点（这不会破坏语义，只是标准化）
+        fixed = fixed.replace('\u201c', '"').replace('\u201d', '"')
+        fixed = fixed.replace('\u2018', "'").replace('\u2019', "'")
+        fixed = fixed.replace('\uff0c', ',').replace('\uff1a', ':').replace('\uff1b', ';')
+        fixed = fixed.replace('\u3001', ',').replace('\u3002', '.')
+        
+        # 修复 gantt 图表中的季度日期格式（Mermaid 不支持 2025-Q1 格式）
+        # 将 2025-Q1 转换为 2025-01-01，2025-Q2 转换为 2025-04-01 等
+        if 'gantt' in fixed.lower():
+            quarter_map = {'Q1': '01-01', 'Q2': '04-01', 'Q3': '07-01', 'Q4': '10-01'}
+            for q, date in quarter_map.items():
+                fixed = re.sub(rf'(\d{{4}})-{q}\b', rf'\1-{date}', fixed)
+        
+        # 注意：CJK 文字替换已移至 _replace_cjk_with_placeholders 方法
+        # 只在渲染失败时才调用，以保留 LLM 生成的有意义内容
+        
+        return fixed
+    
+    def _translate_cjk_text(self, chinese_text: str) -> str:
+        """
+        Translate Chinese text to English using LLM.
+        
+        Args:
+            chinese_text: Chinese text to translate
+            
+        Returns:
+            English translation, or simplified placeholder if translation fails
+        """
+        # 如果没有中文字符，直接返回
+        if not any('\u4e00' <= ch <= '\u9fff' for ch in chinese_text):
+            return chinese_text
+        
+        # 检查缓存
+        if not hasattr(self, '_translation_cache'):
+            self._translation_cache = {}
+        
+        if chinese_text in self._translation_cache:
+            return self._translation_cache[chinese_text]
+        
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.prompts import ChatPromptTemplate
+            from config import LLM_CONFIG
+            
+            llm = ChatOpenAI(
+                model=LLM_CONFIG["model"],
+                api_key=LLM_CONFIG["api_key"],
+                base_url=LLM_CONFIG["base_url"],
+                temperature=0.1
+            )
+            
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a translator. Translate the Chinese text to concise English.
+Rules:
+1. Keep it SHORT (max 5 words if possible)
+2. Use simple words suitable for diagram labels
+3. Output ONLY the English translation, nothing else
+4. If there are English words mixed in, keep them"""),
+                ("human", f"Translate: {chinese_text}")
+            ])
+            
+            chain = prompt | llm
+            result = chain.invoke({})
+            translation = result.content.strip()
+            
+            # 清理翻译结果
+            translation = translation.replace('"', '').replace("'", "")
+            # Enforce ASCII-only output for maximum Mermaid renderer compatibility
+            translation = re.sub(r'[^A-Za-z0-9\s\-]', '', translation)
+            translation = ' '.join(translation.split())[:40]  # 限制长度
+            
+            if translation:
+                self._translation_cache[chinese_text] = translation
+                return translation
+                
+        except Exception as e:
+            logger.warning(f"Translation failed for '{chinese_text[:20]}...': {e}")
+        
+        # 翻译失败时，提取英文部分或使用简短占位符
+        english_parts = re.findall(r'[a-zA-Z0-9][a-zA-Z0-9\s\-_.]*[a-zA-Z0-9]|[a-zA-Z0-9]', chinese_text)
+        if english_parts:
+            result = ' '.join(p.strip() for p in english_parts).strip()
+            self._translation_cache[chinese_text] = result
+            return result
+        
+        # 最后的回退：使用简短标识
+        if not hasattr(self, '_fallback_counter'):
+            self._fallback_counter = 0
+        self._fallback_counter += 1
+        result = f"Item{self._fallback_counter}"
+        self._translation_cache[chinese_text] = result
+        return result
+    
+    def _translate_cjk_in_mermaid(self, mermaid_code: str) -> str:
+        """
+        Translate CJK characters in Mermaid code to English.
+        
+        This method translates Chinese text to English to ensure the diagram
+        can be rendered by services that don't support CJK characters.
+        """
+        fixed = mermaid_code
+        
+        # 只有存在真正的 CJK 字符时才处理
+        if not any('\u4e00' <= ch <= '\u9fff' for ch in fixed):
+            return fixed
+        
+        def _cjk_to_english(text: str, context: str = "Item") -> str:
+            """Translate CJK text to English using LLM."""
+            if not any('\u4e00' <= ch <= '\u9fff' for ch in text):
+                return text
+            # 使用 LLM 翻译
+            return self._translate_cjk_text(text)
+        
+        # 1) 替换方括号节点标签中的中文: A[中文] -> A[Item1]
+        def replace_bracket_label(match):
+            label = match.group(2)
+            if label.strip() == '*':
                 return match.group(0)
+            if any('\u4e00' <= ch <= '\u9fff' for ch in label):
+                label = _cjk_to_english(label, "Item")
+            return f'{match.group(1)}{label}{match.group(3)}'
+        fixed = re.sub(r'(\[)([^\]]+)(\])', replace_bracket_label, fixed)
+        
+        # 2) 替换圆括号节点标签中的中文: A(中文) -> A(Item N)
+        def replace_paren_label(match):
+            full = match.group(0)
+            label = match.group(2)
+            if any('\u4e00' <= ch <= '\u9fff' for ch in label):
+                label = _cjk_to_english(label, "Item")
+                return f'{match.group(1)}{label}{match.group(3)}'
+            return full
+        fixed = re.sub(r'(\(\()([^)]+)(\)\))', replace_paren_label, fixed)
+        fixed = re.sub(r'(\()([^()]+)(\))', replace_paren_label, fixed)
+        
+        # 3) 替换引号内的中文文本（pie, quadrantChart 等）
+        def replace_quoted_chinese(match):
+            quote_open = match.group(1)
+            text = match.group(2)
+            quote_close = match.group(3)
+            if any('\u4e00' <= ch <= '\u9fff' for ch in text):
+                text = _cjk_to_english(text, "Item")
+            return f'{quote_open}{text}{quote_close}'
+        fixed = re.sub(r'(")((?:[^"]*[\u4e00-\u9fff][^"]*)+)(")', replace_quoted_chinese, fixed)
+        
+        # 4) 替换边标签中的中文: -->|中文| -> -->|Label N|
+        def replace_edge_label(match):
+            label = match.group(1)
+            if any('\u4e00' <= ch <= '\u9fff' for ch in label):
+                label = _cjk_to_english(label, "Label")
+            return f'-->|{label}|'
+        fixed = re.sub(r'-->\|([^|]+)\|', replace_edge_label, fixed)
+        
+        # 5) 处理剩余行级中文
+        _first_line = fixed.split('\n')[0].strip().lower() if fixed.strip() else ''
+        _is_sequence = _first_line.startswith('sequencediagram')
+        _is_er = _first_line.startswith('erdiagram')
+        
+        lines = fixed.split('\n')
+        new_lines = []
+        for line in lines:
+            if not any('\u4e00' <= ch <= '\u9fff' for ch in line):
+                new_lines.append(line)
+                continue
+            stripped = line.lstrip()
+            indent = line[:len(line) - len(stripped)]
             
-            fixed = re.sub(r'(["\u201c])([^"\u201d]*[\u4e00-\u9fff][^"\u201d]*)(["\u201d])', 
-                          lambda m: replace_chinese_in_quotes(m) if m.group(1) in ('"', '\u201c') else m.group(0), 
-                          fixed)
-            # 替换中文引号为英文引号
-            fixed = fixed.replace('\u201c', '"').replace('\u201d', '"')
-            
-            # 对于轴标签等非引号包裹的中文
-            lines = fixed.split('\n')
-            new_lines = []
-            for line in lines:
-                # 保留第一行（图表类型声明）
-                if line.strip() and not any('\u4e00' <= ch <= '\u9fff' for ch in line):
-                    new_lines.append(line)
-                elif line.strip():
-                    # 移除中文字符，保留英文和标点
-                    cleaned = re.sub(r'[\u4e00-\u9fff\u201c\u201d\u2018\u2019\u3001\u3002\uff0c\uff1a\uff1b]+', '', line)
-                    if cleaned.strip() and not cleaned.strip().startswith('--'):
-                        new_lines.append(cleaned)
-                    elif not cleaned.strip():
-                        # 整行都是中文，跳过
-                        continue
-                    else:
-                        new_lines.append(cleaned)
+            if stripped.startswith('participant '):
+                rest = stripped[12:].strip()
+                if ' as ' in rest:
+                    parts = rest.split(' as ', 1)
+                    alias = _cjk_to_english(parts[1].strip(), "Actor")
+                    new_lines.append(f'{indent}participant {parts[0].strip()} as {alias}')
+                else:
+                    rest = _cjk_to_english(rest, "Actor")
+                    new_lines.append(f'{indent}participant {rest}')
+            elif _is_sequence and re.search(r'->>|-->>|->', stripped):
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "Actor"), stripped)
+                new_lines.append(f'{indent}{cleaned}')
+            elif _is_er and re.search(r'\|\|--|o\{|\}o|--\|\|', stripped):
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "Entity"), stripped)
+                new_lines.append(f'{indent}{cleaned}')
+            elif _is_er and stripped.endswith('{'):
+                entity_name = stripped[:-1].strip()
+                if any('\u4e00' <= ch <= '\u9fff' for ch in entity_name):
+                    entity_name = _cjk_to_english(entity_name, "Entity")
+                new_lines.append(f'{indent}{entity_name} {{')
+            elif _is_er and re.match(r'^\s*(string|int|float|date|boolean|datetime)\s+', stripped):
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "field"), stripped)
+                new_lines.append(f'{indent}{cleaned}')
+            elif stripped.startswith('title'):
+                rest = stripped[5:].strip()
+                rest = _cjk_to_english(rest, "Research Topic") if rest else "Research Topic"
+                new_lines.append(f'{indent}title {rest}')
+            elif stripped.startswith('section'):
+                rest = stripped[7:].strip()
+                rest = _cjk_to_english(rest, "Phase")
+                new_lines.append(f'{indent}section {rest}')
+            elif stripped.startswith('subgraph '):
+                # 处理 subgraph 中文标签: subgraph "中文" -> subgraph "English"
+                rest = stripped[9:].strip()
+                if rest.startswith('"') and rest.endswith('"'):
+                    inner = rest[1:-1]
+                    if any('\u4e00' <= ch <= '\u9fff' for ch in inner):
+                        inner = _cjk_to_english(inner, "Group")
+                    new_lines.append(f'{indent}subgraph "{inner}"')
+                elif any('\u4e00' <= ch <= '\u9fff' for ch in rest):
+                    rest = _cjk_to_english(rest, "Group")
+                    new_lines.append(f'{indent}subgraph {rest}')
                 else:
                     new_lines.append(line)
-            fixed = '\n'.join(new_lines)
+            elif stripped.startswith('state '):
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "State"), stripped)
+                new_lines.append(f'{indent}{cleaned}')
+            elif '-->' in stripped or '---' in stripped or '->>' in stripped or '-->>' in stripped:
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "State"), stripped)
+                new_lines.append(f'{indent}{cleaned}')
+            elif ':' in stripped and not stripped.startswith(('x-axis', 'y-axis', 'title', 'section', 'dateFormat', 'axisFormat')):
+                parts = stripped.split(':', 1)
+                task_name = parts[0].strip()
+                if any('\u4e00' <= ch <= '\u9fff' for ch in task_name):
+                    task_name = _cjk_to_english(task_name, "Task")
+                rest = parts[1]
+                if any('\u4e00' <= ch <= '\u9fff' for ch in rest):
+                    rest = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "Item"), rest)
+                new_lines.append(f'{indent}{task_name} :{rest}')
+            elif stripped.startswith(('x-axis', 'y-axis')):
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "Axis"), stripped)
+                new_lines.append(f'{indent}{cleaned}')
+            else:
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', lambda m: _cjk_to_english(m.group(0), "Topic"), stripped)
+                if cleaned.strip():
+                    new_lines.append(f'{indent}{cleaned}')
+        fixed = '\n'.join(new_lines)
+        
+        # 6) 最终清理：修复可能残留的空标签
+        fixed = re.sub(r'\[\s*\]', '[Item]', fixed)
+        fixed = re.sub(r'\(\s*\)', '(Item)', fixed)
+        fixed = re.sub(r'""', '"Item"', fixed)
         
         return fixed
     
@@ -1018,51 +1828,244 @@ class AcademicReportGenerator:
         
         return simplified.strip()
     
-    def _try_render_with_fix(self, mermaid_code: str, max_attempts: int = 3) -> Optional[bytes]:
+    def _try_render_with_fix(self, mermaid_code: str) -> Tuple[Optional[bytes], str]:
         """
-        Try to render Mermaid code with progressive fix strategy.
+        Try to render Mermaid code, applying fixes only when rendering fails.
         
         Strategy:
-            1. Pre-fix: Always apply syntax fixes before first attempt
-            2. Attempt 1: Render pre-fixed code
-            3. Attempt 2: Simplify complex elements and retry
-            4. Attempt 3: Aggressive simplification (strip styles, shorten labels)
+            1. Try rendering original code directly (no modifications)
+            2. On failure: Apply basic syntax fix and retry
+            3. On failure: Call LLM for syntax fix (up to 3 times) with error info
+            4. If all rendering fails: Return (None, mermaid_code) for fallback display
+        
+        Returns:
+            Tuple of (image_data, mermaid_code):
+            - If rendering succeeds: (bytes, code_used)
+            - If rendering fails: (None, final_code) for fallback display
         """
-        # 预处理：始终先修复常见语法错误（减少不必要的渲染失败）
-        current_code = self._fix_mermaid_syntax(mermaid_code)
+        current_code = mermaid_code.strip()
+        last_error = None
         
-        # 预验证：检查基本结构是否合理
-        first_line = current_code.split('\n')[0].strip().lower() if current_code.strip() else ''
-        valid_starts = ['flowchart', 'sequencediagram', 'classdiagram', 'statediagram',
-                       'erdiagram', 'gantt', 'pie', 'mindmap', 'timeline', 'quadrantchart',
-                       'gitgraph', 'graph', 'c4context', 'journey', 'requirementdiagram']
-        if not any(first_line.startswith(s) for s in valid_starts):
-            logger.warning(f"Mermaid code has invalid start: '{first_line[:30]}...'")
-            if '-->' in current_code or '---' in current_code:
-                current_code = 'flowchart TD\n' + current_code
-                logger.info("Added 'flowchart TD' header to Mermaid code")
+        # 移除可能被LLM误加的 ``` 标记
+        current_code = re.sub(r'^```\s*mermaid\s*\n?', '', current_code)
+        current_code = re.sub(r'\n?```\s*$', '', current_code)
         
-        for attempt in range(max_attempts):
-            img_data = self._render_mermaid_via_kroki(current_code)
+        # === 第一次尝试：直接渲染原始代码 ===
+        img_data, error = self._try_all_renderers(current_code)
+        if img_data:
+            logger.info("Mermaid rendered successfully with original code")
+            return (img_data, current_code)
+        last_error = error
+        
+        logger.info(f"Original code render failed ({error}), trying basic syntax fix...")
+        
+        # === 第二次尝试：基本语法修复后渲染 ===
+        fixed_code = self._fix_mermaid_syntax(current_code)
+        if fixed_code != current_code:
+            img_data, error = self._try_all_renderers(fixed_code)
             if img_data:
-                if attempt > 0:
-                    logger.info(f"Mermaid rendered successfully after {attempt} fix attempt(s)")
-                return img_data
-            
-            img_data = self._render_mermaid_via_ink(current_code)
-            if img_data:
-                if attempt > 0:
-                    logger.info(f"Mermaid rendered via ink after {attempt} fix attempt(s)")
-                return img_data
-            
-            if attempt < max_attempts - 1:
-                logger.info(f"Mermaid render failed, attempting deeper fix (attempt {attempt + 1})")
-                if attempt == 0:
-                    current_code = self._simplify_mermaid(current_code)
-                elif attempt == 1:
-                    current_code = self._aggressive_simplify_mermaid(current_code)
+                logger.info("Mermaid rendered successfully after basic syntax fix")
+                return (img_data, fixed_code)
+            current_code = fixed_code
+            last_error = error
+
+        first_line = ''
+        for _l in current_code.split('\n'):
+            if _l.strip():
+                first_line = _l.strip().lower()
+                break
+
+        unstable_prefixes = (
+            'block-beta', 'block',
+            'architecture-beta', 'architecture',
+            'packet-beta', 'packet',
+            'requirementdiagram', 'requirement',
+        )
+        if first_line.startswith(unstable_prefixes) or ('block:' in current_code.lower()):
+            converted = self._convert_mermaid_to_flowchart_via_llm(current_code, last_error)
+            if converted and converted != current_code:
+                img_data, error = self._try_all_renderers(converted)
+                if img_data:
+                    logger.info("Mermaid rendered successfully after diagram conversion")
+                    return (img_data, converted)
+                current_code = converted
+                last_error = error
         
-        return None
+        # === 第三次尝试：如果包含中文，尝试翻译成英文后渲染 ===
+        if any('\u4e00' <= ch <= '\u9fff' for ch in current_code):
+            logger.info("Code contains CJK characters, trying translation to English...")
+            translated_code = self._translate_cjk_in_mermaid(current_code)
+            if translated_code != current_code:
+                img_data, error = self._try_all_renderers(translated_code)
+                if img_data:
+                    logger.info("Mermaid rendered successfully after CJK translation")
+                    return (img_data, translated_code)
+                current_code = translated_code
+                last_error = error
+        
+        logger.info(f"Basic syntax fix failed ({last_error}), trying LLM-based fix...")
+        
+        # === 第四次尝试：LLM 语法修复（最多3次），传递错误信息 ===
+        for llm_attempt in range(3):
+            llm_fixed_code = self._fix_mermaid_via_llm(current_code, llm_attempt + 1, last_error)
+            if llm_fixed_code and llm_fixed_code != current_code:
+                img_data, error = self._try_all_renderers(llm_fixed_code)
+                if img_data:
+                    logger.info(f"Mermaid rendered successfully after LLM fix (attempt {llm_attempt + 1})")
+                    return (img_data, llm_fixed_code)
+                current_code = llm_fixed_code
+                last_error = error
+            else:
+                logger.warning(f"LLM fix attempt {llm_attempt + 1} returned no changes")
+                break  # LLM 没有返回有效修复，停止重试
+        
+        # === 所有渲染尝试失败，返回代码供回退显示 ===
+        logger.warning(f"All Mermaid render attempts failed ({last_error}), returning code for fallback display")
+        return (None, current_code)
+    
+    def _try_all_renderers(self, mermaid_code: str) -> tuple[Optional[bytes], Optional[str]]:
+        """
+        Try all available renderers in priority order.
+        
+        Returns:
+            Tuple of (image_data, error_message):
+            - If success: (bytes, None)
+            - If failure: (None, error_description)
+        """
+        errors = []
+        
+        # 1. 优先尝试本地 CLI（支持 CJK，无网络依赖）
+        img_data, error = self._render_mermaid_via_cli(mermaid_code)
+        if img_data:
+            return (img_data, None)
+        if error:
+            errors.append(f"Local CLI: {error}")
+        
+        # 2. 尝试 mermaid.ink 渲染
+        img_data, error = self._render_mermaid_via_ink(mermaid_code)
+        if img_data:
+            return (img_data, None)
+        if error:
+            errors.append(f"mermaid.ink: {error}")
+        
+        # 3. 最后尝试 Kroki 渲染
+        img_data, error = self._render_mermaid_via_kroki(mermaid_code)
+        if img_data:
+            return (img_data, None)
+        if error:
+            errors.append(f"Kroki: {error}")
+        
+        return (None, "; ".join(errors) if errors else "Unknown rendering error")
+    
+    def _fix_mermaid_via_llm(self, mermaid_code: str, attempt: int, error_message: str = None) -> Optional[str]:
+        """
+        Use LLM to fix Mermaid syntax errors.
+        
+        Args:
+            mermaid_code: The Mermaid code to fix
+            attempt: Current attempt number (1-3)
+            error_message: Error message from previous render attempt
+        
+        Returns:
+            Fixed Mermaid code, or None if LLM call fails
+        """
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.prompts import ChatPromptTemplate
+            from config import LLM_CONFIG
+            
+            llm = ChatOpenAI(
+                model=LLM_CONFIG["model"],
+                api_key=LLM_CONFIG["api_key"],
+                base_url=LLM_CONFIG["base_url"],
+                temperature=0.1  # 低温度以获得稳定的修复结果
+            )
+            
+            # 构建包含错误信息的提示
+            error_context = ""
+            if error_message:
+                error_context = f"\n\nRENDERING ERROR: {error_message}\nPlease fix the issue that caused this error."
+            
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a Mermaid diagram syntax expert. Your task is to fix syntax errors in Mermaid code.
+
+RULES:
+1. Fix ONLY syntax errors, preserve the original meaning and structure
+2. Common issues to fix:
+   - Invalid arrow syntax (-> should be --> in flowchart)
+   - Missing or incorrect diagram type declaration
+   - Invalid node/edge labels (special characters, unescaped quotes)
+   - Incorrect indentation (especially for mindmap, gantt)
+   - Missing semicolons or line breaks where required
+   - Invalid edge label syntax: never use -->[label] or --> (label). Use -->|label| instead
+   - CJK characters causing encoding issues (translate to English if needed)
+   - Do NOT introduce beta diagram types (block-beta, architecture-beta, packet-beta) or change diagram type unless absolutely required
+3. Output ONLY the fixed Mermaid code, no explanations
+4. Do NOT add ```mermaid markers
+5. Keep all text content unchanged unless it causes syntax errors"""),
+                ("human", f"""Fix the syntax errors in this Mermaid code (attempt {attempt}/3):{error_context}
+
+{mermaid_code}
+
+Output only the fixed Mermaid code:""")
+            ])
+            
+            chain = prompt | llm
+            result = chain.invoke({})
+            fixed_code = result.content.strip()
+            
+            # 移除可能被 LLM 添加的 ``` 标记
+            fixed_code = re.sub(r'^```\s*mermaid\s*\n?', '', fixed_code)
+            fixed_code = re.sub(r'\n?```\s*$', '', fixed_code)
+            
+            logger.info(f"LLM fix attempt {attempt} completed")
+            return fixed_code
+            
+        except Exception as e:
+            logger.warning(f"LLM fix attempt {attempt} failed: {e}")
+            return None
+
+    def _convert_mermaid_to_flowchart_via_llm(self, mermaid_code: str, error_message: Optional[str] = None) -> Optional[str]:
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.prompts import ChatPromptTemplate
+            from config import LLM_CONFIG
+
+            llm = ChatOpenAI(
+                model=LLM_CONFIG["model"],
+                api_key=LLM_CONFIG["api_key"],
+                base_url=LLM_CONFIG["base_url"],
+                temperature=0.1,
+            )
+
+            error_context = f"\n\nRENDERING ERROR: {error_message}" if error_message else ""
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    """You convert Mermaid diagrams into a Mermaid flowchart that can be rendered reliably.
+Rules:
+1. Output ONLY Mermaid code (no backticks)
+2. Output MUST start with: flowchart TD
+3. Use ONLY flowchart syntax (no block-beta/architecture-beta/packet-beta)
+4. All node IDs must be ASCII identifiers (A, B, node1)
+5. Edge labels must use: -->|label| (never -->[label])
+6. If text contains Chinese, translate it to concise English""",
+                ),
+                (
+                    "human",
+                    f"Convert this Mermaid diagram to a flowchart TD while preserving meaning.{error_context}\n\n{mermaid_code}\n\nOutput only Mermaid code:",
+                ),
+            ])
+
+            chain = prompt | llm
+            result = chain.invoke({})
+            converted = result.content.strip()
+            converted = re.sub(r'^```\s*mermaid\s*\n?', '', converted)
+            converted = re.sub(r'\n?```\s*$', '', converted)
+            return converted.strip()
+        except Exception as e:
+            logger.warning(f"Diagram conversion failed: {e}")
+            return None
     
     def _simplify_mermaid(self, mermaid_code: str) -> str:
         """Simplify complex Mermaid code that may cause rendering issues."""
@@ -1077,8 +2080,67 @@ class AcademicReportGenerator:
         
         return simplified.strip()
     
-    def _render_mermaid_via_kroki(self, mermaid_code: str) -> Optional[bytes]:
-        """Render Mermaid code using Kroki.io API (supports longer code via POST)."""
+    def _render_mermaid_via_cli(self, mermaid_code: str) -> tuple[Optional[bytes], Optional[str]]:
+        """
+        Render Mermaid code using local Mermaid CLI (mmdc).
+        
+        This is the preferred method when available because:
+        - Supports CJK characters natively
+        - No network dependency
+        - Faster rendering
+        
+        Requires: npm install -g @mermaid-js/mermaid-cli
+        
+        Returns:
+            Tuple of (image_data, error_message)
+        """
+        import subprocess
+        import tempfile
+
+        if not self._check_mmdc_available():
+            return (None, "mmdc not installed (npm install -g @mermaid-js/mermaid-cli)")
+        
+        try:
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.mmd', delete=False, encoding='utf-8') as f:
+                f.write(mermaid_code)
+                input_path = f.name
+            
+            output_path = input_path.replace('.mmd', '.png')
+            
+            # 调用 mmdc 渲染
+            result = subprocess.run(
+                ['mmdc', '-i', input_path, '-o', output_path, '-b', 'white', '-s', '2'],
+                capture_output=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                with open(output_path, 'rb') as f:
+                    img_data = f.read()
+                # 清理临时文件
+                os.unlink(input_path)
+                os.unlink(output_path)
+                logger.info("Mermaid rendered via local CLI (mmdc)")
+                return (img_data, None)
+            else:
+                error_msg = result.stderr.decode().strip() if result.stderr else "Unknown mmdc error"
+                logger.warning(f"mmdc render failed: {error_msg}")
+                return (None, error_msg)
+                
+        except subprocess.TimeoutExpired:
+            return (None, "mmdc rendering timed out (>30s)")
+        except Exception as e:
+            logger.warning(f"Local Mermaid CLI render failed: {e}")
+            return (None, str(e))
+    
+    def _render_mermaid_via_kroki(self, mermaid_code: str) -> tuple[Optional[bytes], Optional[str]]:
+        """
+        Render Mermaid code using Kroki.io API (supports longer code via POST).
+        
+        Returns:
+            Tuple of (image_data, error_message)
+        """
         import zlib
         import base64
         import requests
@@ -1092,8 +2154,9 @@ class AcademicReportGenerator:
             response = requests.get(kroki_url, timeout=30, headers=headers)
             
             if response.status_code == 200:
-                return response.content
+                return (response.content, None)
             
+            # GET 失败，尝试 POST
             kroki_post_url = "https://kroki.io/mermaid/png"
             response = requests.post(
                 kroki_post_url,
@@ -1101,34 +2164,73 @@ class AcademicReportGenerator:
                 headers={'Content-Type': 'text/plain', 'User-Agent': 'Mozilla/5.0'},
                 timeout=30
             )
-            response.raise_for_status()
-            return response.content
             
+            if response.status_code == 200:
+                return (response.content, None)
+            else:
+                error_msg = f"HTTP {response.status_code}"
+                # 尝试解析错误信息
+                try:
+                    error_text = response.text[:200]
+                    if error_text:
+                        error_msg = f"HTTP {response.status_code}: {error_text}"
+                except:
+                    pass
+                logger.warning(f"Kroki render failed: {error_msg}")
+                return (None, error_msg)
+            
+        except requests.exceptions.Timeout:
+            return (None, "Request timed out (>30s)")
+        except requests.exceptions.ConnectionError:
+            return (None, "Connection error - network unavailable")
         except Exception as e:
             logger.warning(f"Kroki render failed: {e}")
-            return None
+            return (None, str(e))
     
-    def _render_mermaid_via_ink(self, mermaid_code: str) -> Optional[bytes]:
-        """Render Mermaid code using mermaid.ink API."""
+    def _render_mermaid_via_ink(self, mermaid_code: str) -> tuple[Optional[bytes], Optional[str]]:
+        """
+        Render Mermaid code using mermaid.ink API.
+        
+        Returns:
+            Tuple of (image_data, error_message)
+        """
         import base64
         import requests
         
         try:
             encoded = base64.urlsafe_b64encode(mermaid_code.encode('utf-8')).decode('utf-8')
-            mermaid_url = f"https://mermaid.ink/img/{encoded}?scale=5"
+            # 使用 width 参数而非 scale，避免 "scale can only be set when width or height is set" 错误
+            # 增加宽度到1600以确保饼图等图表的标题不被截断
+            mermaid_url = f"https://mermaid.ink/img/{encoded}?width=1600"
             
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(mermaid_url, timeout=30, headers=headers)
-            response.raise_for_status()
-            return response.content
+            
+            if response.status_code == 200:
+                return (response.content, None)
+            else:
+                error_msg = f"HTTP {response.status_code}"
+                try:
+                    error_text = response.text[:200]
+                    if error_text:
+                        error_msg = f"HTTP {response.status_code}: {error_text}"
+                except:
+                    pass
+                logger.warning(f"mermaid.ink render failed: {error_msg}")
+                return (None, error_msg)
+                
+        except requests.exceptions.Timeout:
+            return (None, "Request timed out (>30s)")
+        except requests.exceptions.ConnectionError:
+            return (None, "Connection error - network unavailable")
         except Exception as e:
             logger.warning(f"mermaid.ink render failed: {e}")
-            return None
+            return (None, str(e))
     
     def _process_mermaid_code_blocks(self, content: str) -> str:
         """
         Find and render all ```mermaid code blocks in the content,
-        replacing them with image references. Includes automatic syntax fixing.
+        replacing them with image references. If rendering fails, keep the code block.
         """
         mermaid_pattern = re.compile(r'```mermaid\s*([\s\S]*?)\s*```', re.IGNORECASE)
         
@@ -1138,11 +2240,12 @@ class AcademicReportGenerator:
                 return ""
             
             try:
-                img_data = self._try_render_with_fix(mermaid_code)
+                img_data, final_code = self._try_render_with_fix(mermaid_code)
                 
                 if not img_data:
-                    logger.warning("All Mermaid render methods failed after fix attempts")
-                    return ""
+                    # 渲染失败，保留 Mermaid 代码块供回退显示
+                    logger.warning("All Mermaid render methods failed, keeping code block")
+                    return f"```mermaid\n{final_code}\n```"
                 
                 from PIL import Image
                 img = Image.open(io.BytesIO(img_data))
@@ -1206,6 +2309,8 @@ class AcademicReportGenerator:
         Returns:
             Tuple of (pdf_path, docx_path)
         """
+        content = self._move_references_to_end(content)
+
         self._reset_counters()
         pdf_path = self._generate_pdf(title, content, filename, images, tables)
         
@@ -1228,6 +2333,8 @@ class AcademicReportGenerator:
         self._reset_counters()
         images = images or []
         tables = tables or []
+
+        content = self._move_references_to_end(content)
         
         # 检测是否为中文内容
         is_chinese = self._is_chinese_content(title) or self._is_chinese_content(content[:500])
@@ -1282,6 +2389,7 @@ class AcademicReportGenerator:
         story.append(Paragraph(date_str, custom['date']))
         story.append(Spacer(1, 12))
         
+        content = self._move_references_to_end(content)
         content = self._process_mermaid_code_blocks(content)
         
         lines = content.split('\n')
@@ -1380,7 +2488,27 @@ class AcademicReportGenerator:
                             rendered_img_path,
                             diagram_type,
                             "Generated Diagram",
-                            is_chinese=is_chinese
+                            is_chinese=is_chinese,
+                            diagram_type=diagram_type,
+                            show_caption=True
+                        ))
+                continue
+            
+            elif line_stripped.startswith('[WEB_SCREENSHOT:'):
+                # 处理网页截图标记: [WEB_SCREENSHOT: url | description]
+                screenshot_match = re.match(r'\[WEB_SCREENSHOT:\s*(.+?)\s*\|\s*(.+?)\s*\]', line_stripped)
+                if screenshot_match:
+                    screenshot_url = screenshot_match.group(1).strip()
+                    screenshot_desc = screenshot_match.group(2).strip()
+                    screenshot_path = self._download_web_screenshot(screenshot_url)
+                    # 下载失败时跳过图片，不生成占位图
+                    if screenshot_path:
+                        story.extend(self._create_figure_with_caption(
+                            screenshot_path,
+                            screenshot_desc,
+                            screenshot_url,
+                            is_chinese=is_chinese,
+                            show_caption=True
                         ))
                 continue
             
@@ -1395,19 +2523,34 @@ class AcademicReportGenerator:
                             img_path, 
                             mermaid_desc, 
                             f"Generated {mermaid_type.title()} Diagram",
-                            is_chinese=is_chinese
+                            is_chinese=is_chinese,
+                            diagram_type=mermaid_type,
+                            show_caption=True
                         ))
                 continue
                 
             else:
-                text = self._escape_xml(line_stripped)
-                if in_references:
-                    story.append(Paragraph(text, custom['reference']))
-                elif after_heading:
-                    story.append(Paragraph(text, custom['body_first']))
-                    after_heading = False
+                # 处理公式
+                processed_text, formulas = self._process_latex_in_text(line_stripped)
+                
+                if formulas:
+                    # 如果有公式，需要分段处理
+                    story.extend(self._create_paragraph_with_formulas(
+                        processed_text, formulas, 
+                        custom['reference'] if in_references else (custom['body_first'] if after_heading else custom['body']),
+                        is_chinese=is_chinese
+                    ))
+                    if after_heading:
+                        after_heading = False
                 else:
-                    story.append(Paragraph(text, custom['body']))
+                    text = self._escape_xml(line_stripped)
+                    if in_references:
+                        story.append(Paragraph(text, custom['reference']))
+                    elif after_heading:
+                        story.append(Paragraph(text, custom['body_first']))
+                        after_heading = False
+                    else:
+                        story.append(Paragraph(text, custom['body']))
         
         if in_table and table_lines:
             table_text = '\n'.join(table_lines)
@@ -1432,6 +2575,97 @@ class AcademicReportGenerator:
         logger.info(f"PDF report generated: {pdf_path}")
         return str(pdf_path)
     
+    def _create_paragraph_with_formulas(self, text: str, formulas: List[Dict], 
+                                         style, is_chinese: bool = False) -> List[Any]:
+        """
+        Create PDF flowables for text containing LaTeX formulas.
+        Formulas are rendered as inline images.
+        
+        Args:
+            text: Text with formula placeholders
+            formulas: List of formula info dicts from _process_latex_in_text
+            style: ReportLab paragraph style
+            is_chinese: Whether the content is Chinese
+            
+        Returns:
+            List of flowables (Paragraphs and Images)
+        """
+        from reportlab.platypus import Paragraph, Image, Spacer
+        from reportlab.lib.units import inch
+        
+        flowables = []
+        
+        # 创建公式占位符到图片路径的映射
+        formula_images = {}
+        for formula in formulas:
+            img_path = self._render_latex_to_image(formula['latex'], formula['display'])
+            if img_path:
+                formula_images[formula['placeholder']] = {
+                    'path': img_path,
+                    'display': formula['display'],
+                    'latex': formula['latex']
+                }
+        
+        # 检查是否有显示公式（需要单独成行）
+        has_display_formula = any(f['display'] for f in formulas if f['placeholder'] in formula_images)
+        
+        if has_display_formula:
+            # 如果有显示公式，分段处理
+            parts = re.split(r'(\[\[FORMULA_DISPLAY_\d+\]\])', text)
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                    
+                if part.startswith('[[FORMULA_DISPLAY_') and part in formula_images:
+                    # 显示公式 - 居中显示为图片
+                    img_info = formula_images[part]
+                    try:
+                        from PIL import Image as PILImage
+                        with PILImage.open(img_info['path']) as img:
+                            img_width, img_height = img.size
+                        # 限制最大宽度
+                        max_width = 5 * inch
+                        scale = min(1.0, max_width / (img_width / 150 * inch))
+                        display_width = (img_width / 150) * inch * scale
+                        display_height = (img_height / 150) * inch * scale
+                        
+                        flowables.append(Spacer(1, 6))
+                        img_flowable = Image(img_info['path'], width=display_width, height=display_height)
+                        img_flowable.hAlign = 'CENTER'
+                        flowables.append(img_flowable)
+                        flowables.append(Spacer(1, 6))
+                    except Exception as e:
+                        logger.warning(f"Failed to add formula image: {e}")
+                        # 回退：显示原始 LaTeX
+                        flowables.append(Paragraph(self._escape_xml(f"[{img_info['latex']}]"), style))
+                else:
+                    # 普通文本（可能包含行内公式）
+                    # 替换行内公式为图片标记或文本
+                    processed_part = part
+                    for placeholder, img_info in formula_images.items():
+                        if not img_info['display'] and placeholder in processed_part:
+                            # 行内公式 - 在 PDF 中暂时用斜体文本表示
+                            processed_part = processed_part.replace(
+                                placeholder, 
+                                f"<i>{self._escape_xml(img_info['latex'])}</i>"
+                            )
+                    
+                    if processed_part.strip():
+                        flowables.append(Paragraph(self._escape_xml(processed_part), style))
+        else:
+            # 只有行内公式
+            processed_text = text
+            for placeholder, img_info in formula_images.items():
+                # 行内公式用斜体表示
+                processed_text = processed_text.replace(
+                    placeholder,
+                    f"<i>{self._escape_xml(img_info['latex'])}</i>"
+                )
+            flowables.append(Paragraph(self._escape_xml(processed_text), style))
+        
+        return flowables if flowables else [Paragraph(self._escape_xml(text), style)]
+    
     def _escape_xml(self, text: str) -> str:
         """Escape XML special characters while preserving some formatting."""
         text = text.replace('&', '&amp;')
@@ -1439,7 +2673,65 @@ class AcademicReportGenerator:
         text = text.replace('>', '&gt;')
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
         text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+        # 修复嵌套标签问题：确保标签正确闭合
+        text = self._fix_html_tag_nesting(text)
         return text
+    
+    def _fix_html_tag_nesting(self, text: str) -> str:
+        """
+        Fix improperly nested HTML tags (e.g., <b><i>text</b></i> -> <b><i>text</i></b>).
+        Uses a stack-based approach to ensure proper tag closure order.
+        """
+        import re
+        
+        # 支持的标签
+        tag_pattern = re.compile(r'<(/?)([bi])>')
+        
+        result = []
+        stack = []  # 存储打开的标签
+        last_end = 0
+        
+        for match in tag_pattern.finditer(text):
+            # 添加标签之前的文本
+            result.append(text[last_end:match.start()])
+            last_end = match.end()
+            
+            is_closing = match.group(1) == '/'
+            tag_name = match.group(2)
+            
+            if not is_closing:
+                # 打开标签
+                stack.append(tag_name)
+                result.append(f'<{tag_name}>')
+            else:
+                # 关闭标签
+                if tag_name in stack:
+                    # 找到对应的打开标签位置
+                    idx = len(stack) - 1 - stack[::-1].index(tag_name)
+                    # 先关闭所有在它之后打开的标签
+                    tags_to_reopen = []
+                    while len(stack) > idx + 1:
+                        t = stack.pop()
+                        result.append(f'</{t}>')
+                        tags_to_reopen.append(t)
+                    # 关闭目标标签
+                    stack.pop()
+                    result.append(f'</{tag_name}>')
+                    # 重新打开之前关闭的标签
+                    for t in reversed(tags_to_reopen):
+                        stack.append(t)
+                        result.append(f'<{t}>')
+                # 如果标签不在栈中，忽略这个关闭标签
+        
+        # 添加剩余文本
+        result.append(text[last_end:])
+        
+        # 关闭所有未关闭的标签
+        while stack:
+            t = stack.pop()
+            result.append(f'</{t}>')
+        
+        return ''.join(result)
     
     def _set_word_run_font(self, run, font_latin: str, font_size_pt: float, 
                            is_chinese: bool = False, bold: bool = False, italic: bool = False,
@@ -1481,38 +2773,112 @@ class AcademicReportGenerator:
         spacing.set(qn('w:line'), str(int(240 * line_spacing)))
         spacing.set(qn('w:lineRule'), 'auto')
     
-    def _add_page_number(self, doc):
-        """Add page number to footer (right-aligned, Arabic numerals)."""
+    def _add_header_and_footer(self, doc, title: str = "", is_chinese: bool = False):
+        """
+        Add header (with title) and footer (with page number) to Word document.
+        
+        Args:
+            doc: Word document object
+            title: Report title for header
+            is_chinese: Whether to use Chinese formatting
+        """
         from docx.oxml.ns import qn
         from docx.shared import Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         
         try:
             section = doc.sections[-1]
+            
+            # === 添加页眉 ===
+            header = section.header
+            header.is_linked_to_previous = False
+            
+            header_para = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+            header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # 页眉内容：报告标题（截断过长标题）
+            header_text = title[:50] + "..." if len(title) > 50 else title
+            if not header_text:
+                header_text = "RAAA 深度研究报告" if is_chinese else "RAAA Deep Research Report"
+            
+            header_run = header_para.add_run(header_text)
+            header_run.font.size = Pt(9)
+            header_run.font.name = 'Times New Roman'
+            if is_chinese:
+                header_run._element.rPr.rFonts.set(qn('w:eastAsia'), 'SimSun')
+            
+            # 页眉下划线
+            from docx.oxml import parse_xml
+            from docx.oxml.ns import nsdecls
+            pPr = header_para._element.get_or_add_pPr()
+            pBdr = parse_xml(
+                f'<w:pBdr {nsdecls("w")}>'
+                '  <w:bottom w:val="single" w:sz="4" w:space="1" w:color="auto"/>'
+                '</w:pBdr>'
+            )
+            pPr.append(pBdr)
+            
+            # === 添加页脚（页码） ===
             footer = section.footer
             footer.is_linked_to_previous = False
             
-            para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
-            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            footer_para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+            footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             
-            # 添加页码域代码
-            run = para.add_run()
-            run.font.size = Pt(9)
-            fldChar1 = run._element.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'begin'})
-            run._element.append(fldChar1)
+            # 添加页码格式：第 X 页 / 共 Y 页 或 Page X of Y
+            if is_chinese:
+                footer_para.add_run("第 ").font.size = Pt(9)
+            else:
+                footer_para.add_run("Page ").font.size = Pt(9)
             
-            run2 = para.add_run()
+            # 当前页码域
+            run1 = footer_para.add_run()
+            run1.font.size = Pt(9)
+            fldChar1 = run1._element.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'begin'})
+            run1._element.append(fldChar1)
+            
+            run2 = footer_para.add_run()
             run2.font.size = Pt(9)
             instrText = run2._element.makeelement(qn('w:instrText'), {})
             instrText.text = ' PAGE '
             run2._element.append(instrText)
             
-            run3 = para.add_run()
+            run3 = footer_para.add_run()
             run3.font.size = Pt(9)
             fldChar2 = run3._element.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'end'})
             run3._element.append(fldChar2)
+            
+            if is_chinese:
+                footer_para.add_run(" 页 / 共 ").font.size = Pt(9)
+            else:
+                footer_para.add_run(" of ").font.size = Pt(9)
+            
+            # 总页数域
+            run4 = footer_para.add_run()
+            run4.font.size = Pt(9)
+            fldChar3 = run4._element.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'begin'})
+            run4._element.append(fldChar3)
+            
+            run5 = footer_para.add_run()
+            run5.font.size = Pt(9)
+            instrText2 = run5._element.makeelement(qn('w:instrText'), {})
+            instrText2.text = ' NUMPAGES '
+            run5._element.append(instrText2)
+            
+            run6 = footer_para.add_run()
+            run6.font.size = Pt(9)
+            fldChar4 = run6._element.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'end'})
+            run6._element.append(fldChar4)
+            
+            if is_chinese:
+                footer_para.add_run(" 页").font.size = Pt(9)
+            
         except Exception as e:
-            logger.debug(f"Failed to add page number: {e}")
+            logger.debug(f"Failed to add header/footer: {e}")
+    
+    def _add_page_number(self, doc):
+        """Legacy method - redirects to _add_header_and_footer for backward compatibility."""
+        self._add_header_and_footer(doc)
 
     def _generate_word(self, title: str, content: str, filename: str = None,
                        images: List[Dict] = None, tables: List[Dict] = None) -> str:
@@ -1618,8 +2984,8 @@ class AcademicReportGenerator:
         
         doc.add_paragraph()
         
-        # 添加页码
-        self._add_page_number(doc)
+        # 添加页眉和页码
+        self._add_header_and_footer(doc, title=title, is_chinese=is_chinese)
         
         downloaded_images = self._prepare_images(images, max_images=8)
         img_idx = 0
@@ -1753,7 +3119,23 @@ class AcademicReportGenerator:
                             'path': rendered_img_path,
                             'title': diagram_type,
                             'source': "Generated Diagram"
-                        }, is_chinese=is_chinese)
+                        }, is_chinese=is_chinese, show_caption=True)
+                continue
+            
+            elif line_stripped.startswith('[WEB_SCREENSHOT:'):
+                # 处理网页截图标记: [WEB_SCREENSHOT: url | description]
+                screenshot_match = re.match(r'\[WEB_SCREENSHOT:\s*(.+?)\s*\|\s*(.+?)\s*\]', line_stripped)
+                if screenshot_match:
+                    screenshot_url = screenshot_match.group(1).strip()
+                    screenshot_desc = screenshot_match.group(2).strip()
+                    screenshot_path = self._download_web_screenshot(screenshot_url)
+                    # 下载失败时跳过图片，不生成占位图
+                    if screenshot_path:
+                        self._add_word_image(doc, {
+                            'path': screenshot_path,
+                            'title': screenshot_desc,
+                            'source': screenshot_url
+                        }, is_chinese=is_chinese, show_caption=True)
                 continue
             
             elif line_stripped.startswith('[MERMAID:'):
@@ -1767,24 +3149,60 @@ class AcademicReportGenerator:
                             'path': img_path,
                             'title': mermaid_desc,
                             'source': f"Generated {mermaid_type.title()} Diagram"
-                        }, is_chinese=is_chinese)
+                        }, is_chinese=is_chinese, show_caption=True)
                 continue
                 
             else:
-                text = line_stripped.replace('**', '').replace('*', '')
-                para = doc.add_paragraph()
-                if is_chinese:
-                    # 正文首行缩进两字符
-                    para.paragraph_format.first_line_indent = Cm(0.74)  # 约两个中文字符
-                para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                run = para.add_run(text)
-                if in_references:
-                    self._set_word_run_font(run, font_latin, ref_size,
-                                            is_chinese=is_chinese, font_east_asia=font_body)
-                else:
-                    self._set_word_run_font(run, font_latin, body_size,
-                                            is_chinese=is_chinese, font_east_asia=font_body)
-                self._set_paragraph_line_spacing(para, 1.5)
+                # 处理公式
+                processed_text, formulas = self._process_latex_in_text(line_stripped)
+                text = processed_text.replace('**', '').replace('*', '')
+                
+                # 替换公式占位符
+                for formula in formulas:
+                    placeholder = formula['placeholder']
+                    latex = formula['latex']
+                    if formula['display']:
+                        # 显示公式：单独成段，居中
+                        text = text.replace(placeholder, '')
+                    else:
+                        # 行内公式：用斜体显示
+                        text = text.replace(placeholder, f' {latex} ')
+                
+                text = text.strip()
+                
+                # 先处理显示公式（单独成段）
+                for formula in formulas:
+                    if formula['display']:
+                        # 渲染公式为图片并插入
+                        img_path = self._render_latex_to_image(formula['latex'], display_mode=True)
+                        if img_path:
+                            self._add_word_image(doc, {
+                                'path': img_path,
+                                'title': '',
+                                'source': ''
+                            }, is_chinese=is_chinese, show_caption=False)
+                
+                if text:
+                    para = doc.add_paragraph()
+                    
+                    if in_references:
+                        # 参考文献使用左对齐，避免英文单词间距过大
+                        para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                        # 参考文献不需要首行缩进，使用悬挂缩进
+                        para.paragraph_format.first_line_indent = Cm(-0.74)
+                        para.paragraph_format.left_indent = Cm(0.74)
+                        run = para.add_run(text)
+                        self._set_word_run_font(run, font_latin, ref_size,
+                                                is_chinese=is_chinese, font_east_asia=font_body)
+                    else:
+                        if is_chinese:
+                            # 正文首行缩进两字符
+                            para.paragraph_format.first_line_indent = Cm(0.74)  # 约两个中文字符
+                        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                        run = para.add_run(text)
+                        self._set_word_run_font(run, font_latin, body_size,
+                                                is_chinese=is_chinese, font_east_asia=font_body)
+                    self._set_paragraph_line_spacing(para, 1.5)
         
         if in_table and table_lines:
             self._add_word_table(doc, table_lines, is_chinese=is_chinese)
@@ -1897,33 +3315,34 @@ class AcademicReportGenerator:
         except Exception as e:
             logger.warning(f"Failed to add Word table: {e}")
     
-    def _add_word_image(self, doc, img_info: Dict, is_chinese: bool = False):
-        """Add an image with caption to Word document."""
+    def _add_word_image(self, doc, img_info: Dict, is_chinese: bool = False, show_caption: bool = False):
+        """Add an image to Word document, optionally with caption."""
         try:
             from docx.shared import Inches, Pt
             from docx.enum.text import WD_ALIGN_PARAGRAPH
-            
-            fig_num = self._next_figure_num()
             
             para = doc.add_paragraph()
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = para.add_run()
             run.add_picture(img_info['path'], width=Inches(5.0))
             
-            caption = doc.add_paragraph()
-            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            if is_chinese:
-                caption_text = f"图{fig_num} {img_info.get('title', '')}"
-                if img_info.get('source') and img_info['source'] != 'Unknown':
-                    caption_text += f"（来源：{img_info['source']}）"
-                caption_run = caption.add_run(caption_text)
-                self._set_word_run_font(caption_run, 'Times New Roman', 9,
-                                        is_chinese=True, font_east_asia='SimHei')
-            else:
-                caption_text = f"Figure {fig_num}. {img_info.get('title', '')} (Source: {img_info.get('source', 'Unknown')})"
-                caption_run = caption.add_run(caption_text)
-                caption_run.font.size = Pt(9)
-                caption_run.font.name = 'Times New Roman'
+            # 只在 show_caption=True 时显示题注
+            if show_caption:
+                fig_num = self._next_figure_num()
+                caption = doc.add_paragraph()
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if is_chinese:
+                    caption_text = f"图{fig_num} {img_info.get('title', '')}"
+                    if img_info.get('source') and img_info['source'] != 'Unknown':
+                        caption_text += f"（来源：{img_info['source']}）"
+                    caption_run = caption.add_run(caption_text)
+                    self._set_word_run_font(caption_run, 'Times New Roman', 9,
+                                            is_chinese=True, font_east_asia='SimHei')
+                else:
+                    caption_text = f"Figure {fig_num}. {img_info.get('title', '')} (Source: {img_info.get('source', 'Unknown')})"
+                    caption_run = caption.add_run(caption_text)
+                    caption_run.font.size = Pt(9)
+                    caption_run.font.name = 'Times New Roman'
             
         except Exception as e:
             logger.warning(f"Failed to add Word image: {e}")

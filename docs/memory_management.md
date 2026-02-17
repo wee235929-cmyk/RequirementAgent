@@ -71,7 +71,7 @@
 #### 2.2.2 写入实体（Entity Store）
 实体写入主要发生在“生成 SRS”之后：
 
-- `app.py` → `generate_srs()`
+- `api/routes/srs.py` → `generate_srs()`
   - `RequirementsGenerator.extract_entities_for_storage(result)` 抽取 `FR-xxx`/`NFR-xxx`/`BR-xxx`
   - `memory.store_entity(entity["text"], entity["metadata"])` 写入 FAISS
 
@@ -98,8 +98,8 @@
 注意：当前代码中 `retrieve_entities` 在 Orchestrator 的核心链路里**并没有被用于增强提示词**（即：它存在，但尚未在回答生成时自动注入 context）。
 
 ### 2.5 清理机制
-- UI 按钮：`app.py` → `_render_chat_controls()`
-  - `Clear Memory` → `st.session_state.orchestrator.clear_memory()`
+- UI 按钮：React 前端侧边栏 `Clear Memory` 按钮
+  - 调用 `api/routes/stats.py` 的 `/api/stats/memory/clear` 端点
 
 - `OrchestratorAgent.clear_memory()`
   - `self.memory.clear_memory()`
@@ -143,8 +143,8 @@
 - 应用重启后可恢复，不需要重新解析文档（前提是文件仍在且索引目录存在）。
 
 ### 3.3 清理机制
-- UI 按钮：`app.py` → `_render_index_stats()`
-  - `Clear Index` → `st.session_state.orchestrator.clear_rag_index()`
+- UI 按钮：React 前端侧边栏 `Clear Index` 按钮
+  - 调用 `api/routes/documents.py` 的 `/api/documents/index/clear` 端点
 
 - `OrchestratorAgent.clear_rag_index()`
   - `self.rag_indexer.clear_index()`
@@ -279,8 +279,11 @@ Mem0 是**并行运行**的可选层，不会影响现有功能：
 ---
 
 ## 7. 相关源码索引
-- `src/modules/memory.py` - 核心记忆类
-- `src/modules/mem0_memory.py` - Mem0 封装模块
-- `src/agents/orchestrator.py` - 对话处理与记忆存储
-- `app.py` - UI 与记忆状态显示
+- `src/memory/conversation.py` - 核心记忆类 (EnhancedConversationMemory)
+- `src/memory/mem0_adapter.py` - Mem0 适配器模块
+- `src/core/orchestrator.py` - 对话处理与记忆存储
+- `api/routes/chat.py` - 聊天 API 入口
+- `api/routes/stats.py` - 记忆统计 API
 - `src/rag/indexer.py` - RAG 索引管理
+- `src/config.py` - 配置文件
+- `templates/settings.yaml` - 参数配置（memory 配置项）

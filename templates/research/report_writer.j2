@@ -19,17 +19,47 @@ CRITICAL WRITING RULES:
 1. NARRATIVE STYLE: Write in flowing paragraphs, NOT bullet points. Each section should read like an academic paper.
 2. MINIMAL LISTS: Use bullet points sparingly - only for truly enumerable items. Maximum 2-3 short lists per major section.
 3. TABLES: Include only 3-5 tables TOTAL in the entire report. Use [TABLE: title | col1, col2, col3 | data...] format.
-4. DIAGRAMS: Include 6-10 diverse Mermaid diagrams. Use DIFFERENT diagram types for variety:
-   - flowchart/graph: Process flows, decision trees, system architecture, workflows
-   - sequenceDiagram: Interactions between components, API calls, user journeys
-   - classDiagram: Object relationships, system components, data models
-   - stateDiagram-v2: State machines, lifecycle stages, status transitions
-   - erDiagram: Database schemas, entity relationships
-   - gantt: Project timelines, roadmaps, schedules
-   - pie: Market share, distribution, proportions
-   - mindmap: Concept maps, topic hierarchies, brainstorming
-   - timeline: Historical events, milestones, evolution
-   - quadrantChart: Positioning analysis, priority matrices
+
+4. VISUAL ELEMENTS (diagrams, screenshots, tables):
+   A. MERMAID DIAGRAMS: Include 8-12 diagrams total. You may use multiple diagrams of the same type if needed, but limit each type to MAX 2 per report.
+      Available types (choose the most appropriate for your content):
+      
+      CORE DIAGRAMS:
+      - flowchart TD/LR: Process flows, decision trees, system architectures, workflows, algorithms
+      - sequenceDiagram: Component interactions, API calls, protocol flows, authentication sequences
+      - classDiagram: Object relationships, class hierarchies, data models, system components
+      - stateDiagram-v2: State machines, lifecycle stages, status transitions, workflow states
+      - erDiagram: Entity relationships, database schemas, data modeling
+      - gantt: Project timelines, roadmaps, sprint planning, release schedules
+      
+      DATA VISUALIZATION:
+      - pie: Market share, budget allocation, survey results, proportional data
+      - xychart-beta: Line/bar charts for trends, performance metrics, comparative data (use only if necessary)
+      - quadrantChart: Priority matrices, risk assessment, portfolio analysis, positioning
+      - sankey-beta: Flow quantities, resource allocation, process throughput (use only if necessary)
+      
+      CONCEPTUAL & HIERARCHICAL:
+      - mindmap: Concept maps, topic hierarchies, brainstorming, knowledge organization
+      - timeline: Historical events, milestones, evolution, chronological sequences
+      - journey: User experience mapping, customer journeys, service blueprinting
+      
+      TECHNICAL & ARCHITECTURE:
+      - gitGraph: Version control branching, release strategies, Git workflows
+      - C4Context/C4Container/C4Component: Software architecture at different abstraction levels
+      - architecture-beta: Cloud architectures, microservice topologies, infrastructure diagrams (use only if necessary)
+      - requirementDiagram: Requirements traceability, system requirements
+      - block-beta: Block-based hierarchical structures, system blocks
+   
+   B. WEB SCREENSHOTS: When research sources contain useful visual data (charts, graphs, infographics, data tables, screenshots), you SHOULD include them to enrich the report. Use:
+      [WEB_SCREENSHOT: image_url | description]
+      Example: [WEB_SCREENSHOT: https://example.com/chart.png | Market share comparison 2024]
+      IMPORTANT: Actively look for image URLs in the research findings and include 3-6 relevant screenshots throughout the report.
+   
+   C. CRITICAL - IN-TEXT REFERENCES: Every diagram, table, and screenshot MUST be referenced in the text BEFORE it appears.
+      - For diagrams: "As shown in Figure X below, the process flow..."
+      - For tables: "Table X summarizes the key differences..."
+      - For screenshots: "The data visualization from [source] (see Figure X) illustrates..."
+      Number figures sequentially (Figure 1, Figure 2, etc.) and tables separately (Table 1, Table 2, etc.)
    
    MERMAID SYNTAX RULES (CRITICAL - follow EXACTLY or diagram will fail):
    - Use ONLY simple ASCII alphanumeric characters in node labels. NO special characters: no parentheses (), no quotes "", no colons :, no semicolons ;, no ampersands &, no percentage %, no hash #
@@ -38,6 +68,7 @@ CRITICAL WRITING RULES:
    - Use <br/> for line breaks (NEVER <br> without closing slash)
    - Use --> for arrows (NEVER -> which is invalid in flowchart)
    - Edge labels: A -->|label text| B (no special chars in label)
+   - NEVER use edge labels like -->[label] or --> (label) or -->/label/. Always use -->|label|.
    - For flowchart: MUST start with "flowchart TD" or "flowchart LR" (not "graph")
    - For sequenceDiagram: participant names must be single words (no spaces), use "participant A as Long Name" for display names
    - For pie: format is exactly: "Label" : number (with quotes around label)
@@ -49,9 +80,9 @@ CRITICAL WRITING RULES:
    - NEVER use HTML tags except <br/>
    - NEVER use markdown formatting (**, *, etc.) inside Mermaid code
    - NEVER include ``` markers inside the mermaid code block itself
-   - IMPORTANT: ALL text inside Mermaid diagrams MUST be in English, regardless of the report language. Chinese/CJK characters WILL cause rendering failures. Translate all labels, titles, axis names, quadrant labels to English inside Mermaid code blocks
+   - IMPORTANT: ALL text inside Mermaid diagrams MUST be in the SAME language as the user's query. If the query is in Chinese, use Chinese for all labels. If in English, use English. Do NOT mix languages within a single diagram.
    
-5. CITATIONS: Every factual claim needs [Author, Year] citation. All citations MUST appear in References.
+5. CITATIONS: Use NUMBERED citations [1], [2], [3] for all factual claims. Each number MUST correspond to the same numbered entry in References. Assign numbers in order of first appearance.
 
 REQUIRED STRUCTURE:
 
@@ -193,7 +224,7 @@ Format ALL references in standard academic citation style (APA/IEEE format):
 
 [4] Author, D. D. (Year, Month Day). Article title. *Website Name*. https://url
 
-IMPORTANT: Every [Author, Year] citation in the text MUST have a numbered entry here. Use consistent formatting.
+IMPORTANT: Reference numbers MUST match the citation numbers used in the report text. If [1] is cited in the text, [1] here must be that exact source.
 
 FORMATTING:
 - Use ## for sections, ### for subsections

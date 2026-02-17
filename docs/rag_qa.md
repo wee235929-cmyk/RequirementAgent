@@ -9,7 +9,8 @@
 >- RAG Chain：`src/rag/chain.py`
 >- 索引与检索：`src/rag/indexer.py`
 >- 文档解析：`src/rag/parser.py`
->- Prompt 配置：`src/config.py`（`SYSTEM_PROMPTS`）
+>- Prompt 配置：`src/config.py` + `templates/system/*.j2`（系统提示词）
+>- 参数配置：`templates/settings.yaml`（RAG 参数如 chunk_size、similarity_threshold 等）
 
 ---
 
@@ -17,7 +18,7 @@
 
 RAG Q&A 的整体调用链路可以概括为：
 
-1. **用户在 Streamlit 聊天框输入问题**
+1. **用户在 React 前端聊天框输入问题**
 2. **Orchestrator 进行意图识别**（判断是 `rag_qa` 还是其它能力）
 3. **进入 RAG Q&A 节点**（`OrchestratorAgent._rag_qa_node`）
 4. **调用 `AgenticRAGChain.invoke` 进行检索与生成**
@@ -29,13 +30,13 @@ RAG Q&A 的整体调用链路可以概括为：
 ## 2. 入口与触发：UI 如何把 query 交给 Agent
 
 ### 2.1 用户输入
-在 `app.py` 的 `render_chat_interface()` 中，用户通过 `st.chat_input()` 输入文本。
+用户通过 React 前端的聊天界面输入文本，请求发送到 `api/routes/chat.py` 的 `/api/chat/send` 或 `/api/chat/stream` 端点。
 
-随后 `process_user_message(prompt)` 会：
+后端处理流程：
 
-- 判断当前是否上传文件
-- 调用 `st.session_state.orchestrator.detect_intent(...)` 做意图识别
-- 根据意图路由到不同处理函数
+- 从会话管理器获取用户会话
+- 调用 `OrchestratorAgent.invoke()` 处理请求
+- 根据意图路由到不同处理节点
 
 ### 2.2 意图识别（决定是否走 RAG）
 `OrchestratorAgent.detect_intent()` 使用 LLM + `SYSTEM_PROMPTS["intent_detection"]` 分类：
@@ -200,10 +201,10 @@ RAG Q&A 的整体调用链路可以概括为：
 虽然本文件重点是问答链路，但为了理解“检索到的 docs 是如何产生的”，需要补充索引流程。
 
 ### 5.1 文档上传与索引入口
-`app.py` 的侧边栏：
+React 前端侧边栏：
 
 - 上传文件后点击 `Index Documents`
-- 调用 `index_documents(files)`
+- 调用 `api/routes/documents.py` 的 `/api/documents/upload` 和 `/api/documents/index` 端点
 - 最终执行 `rag_indexer.index_documents(file_paths)`
 
 ### 5.2 文档解析（DocumentParser）
@@ -242,9 +243,12 @@ Docling 模式会把表格按“可搜索文本”方式拼到正文中（`--- T
 ---
 
 ## 7. 相关文件索引
-- `app.py`
-- `src/agents/orchestrator.py`
-- `src/rag/chain.py`
-- `src/rag/indexer.py`
-- `src/rag/parser.py`
-- `src/config.py`
+- `api/routes/chat.py` - 聊天 API 入口
+- `api/routes/documents.py` - 文档管理 API
+- `src/core/orchestrator.py` - 编排代理
+- `src/rag/chain.py` - RAG 问答链
+- `src/rag/indexer.py` - 文档索引器
+- `src/rag/parser.py` - 文档解析器
+- `src/config.py` - 配置文件
+- `templates/settings.yaml` - 参数配置
+- `templates/system/rag_*.j2` - RAG 相关提示词模板

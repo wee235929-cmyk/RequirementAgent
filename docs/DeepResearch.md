@@ -9,7 +9,8 @@
 >- Deep Research 工作流：`src/research/workflow.py`
 >- Planner/Searcher/Writer Agents：`src/research/agents.py`
 >- 报告生成（PDF/Word）：`src/research/report_generator.py`
->- Prompt 配置：`src/config.py`（`SYSTEM_PROMPTS["research_planner"|"research_synthesizer"|"report_writer"]`）
+>- Prompt 配置：`src/config.py` + `templates/research/*.j2`（调研提示词模板）
+>- 参数配置：`templates/settings.yaml`（deep_research 配置项）
 
 ---
 
@@ -58,7 +59,7 @@ Deep Research 用于把一个“宽泛的调研问题”自动拆解为若干可
 └─────────────────────────────────────────────────────────┘
 ```
 
-**配置项**（`config.py` 或环境变量）：
+**配置项**（`templates/settings.yaml` 或环境变量）：
 
 | 配置 | 环境变量 | 默认值 | 说明 |
 |-----|---------|-------|------|
@@ -333,7 +334,7 @@ Writer 成功时：
 
 ## 8. PDF 生成阶段（PDFReportGenerator）
 
-代码位置：`src/modules/research/pdf_generator.py`
+代码位置：`src/research/report_generator.py`
 
 ### 8.1 产物目录
 PDF 输出目录默认是：
@@ -374,16 +375,11 @@ PDF 输出目录默认是：
 
 ## 9. UI 层的展示与下载
 
-当 Deep Research 完成并生成 PDF：
+当 Deep Research 完成并生成 PDF/Word 报告：
 
-- `app.py` 会读取 `pdf_path`
-- `st.download_button(...)` 允许用户下载 PDF
-
-其中下载按钮的：
-
-- `data`：读取本地 PDF bytes
-- `file_name`：使用 `os.path.basename(pdf_path)`
-- `mime`：`application/pdf`
+- React 前端通过 `/api/research/status` 轮询任务状态
+- 完成后通过 `/api/research/download/{task_id}` 下载报告
+- 支持 PDF 和 Word 双格式下载
 
 ---
 
@@ -403,9 +399,11 @@ PDF 输出目录默认是：
 ---
 
 ## 11. 相关文件索引
-- `src/modules/research/agents.py`
-- `src/modules/research/workflow.py`
-- `src/modules/research/pdf_generator.py`
-- `src/agents/orchestrator.py`
-- `app.py`
-- `src/config.py`
+- `api/routes/research.py` - 调研 API 入口
+- `src/research/agents.py` - Planner/Searcher/Writer 代理
+- `src/research/workflow.py` - LangGraph 工作流
+- `src/research/report_generator.py` - PDF/Word 报告生成器
+- `src/core/orchestrator.py` - 编排代理
+- `src/config.py` - 配置文件
+- `templates/settings.yaml` - 参数配置
+- `templates/research/*.j2` - 调研提示词模板

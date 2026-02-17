@@ -99,8 +99,15 @@ Thumbs.db
 rag_index/
 faiss_index/
 
-# Generated reports
-reports/*.pdf
+# Generated reports (all output files)
+reports/
+
+# Mem0 local storage (runtime data)
+mem0_storage/
+
+# Personal / interview documents (not for public repo)
+docs/interview_intro.md
+docs/resume.md
 
 # Temporary files
 *.tmp

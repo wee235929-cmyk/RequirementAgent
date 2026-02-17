@@ -27,16 +27,18 @@
 - **Deep Research**：Planner → Searcher → Writer 的工作流，输出研究报告并生成 PDF
 
 ## 项目架构概览
-本项目以 Streamlit 为 UI 入口，以 LangGraph 编排多种能力：
+本项目以 React + FastAPI 为前后端，以 LangGraph 编排多种能力：
 
-- **UI 层**：`app.py`
+- **前端（UI 层）**：`frontend/`（React 18 + TypeScript + TailwindCSS）
   - 文档上传/索引、图谱构建、对话交互、SRS 导出、调研 PDF 下载等
-- **编排层（Orchestrator）**：`src/agents/orchestrator.py`
+- **后端（API 层）**：`api/`（FastAPI）
+  - RESTful API + 流式响应，Session 管理
+- **编排层（Orchestrator）**：`src/core/orchestrator.py`
   - 意图识别（intent detection）
   - 根据意图路由到：需求生成 / RAG 问答 / 深度调研 / 普通对话
-- **需求生成模块**：`src/modules/requirements_generator.py`
+- **需求生成模块**：`src/requirements/generator.py`
   - 生成 → 评估 →（可选）改写迭代
-- **记忆模块**：`src/modules/memory.py`
+- **记忆模块**：`src/memory/conversation.py`
   - 对话摘要 + 关键实体存储（FAISS）
 - **RAG/GraphRAG 模块**：`src/rag/indexer.py`, `src/rag/chain.py`, `src/rag/parser.py`
   - 文档解析与切分
@@ -64,75 +66,58 @@
 ## 目录结构
 ```text
 RequirementAgent/
-├── app.py
-├── src/
-│   ├── agents/
-│   ├── modules/
-│   ├── rag/
-│   ├── tools/
-│   └── utils/
-├── templates/
-│   ├── roles/
-│   ├── rag/
-│   ├── research/
-│   ├── requirements/
-│   └── system/
-├── docs/
-├── tests/              # NEW
-│   ├── __init__.py
-│   └── test_integration.py
-├── rag_index/
-├── faiss_index/
-└── reports/
-```
-More specific directory structure:
-```text
-RequirementAgent/
-  app.py
-  src/
-    agents/
-      orchestrator.py
-    modules/
-      memory.py
-      requirements_generator.py
-      research/
-    rag/
-      indexer.py
-      chain.py
-      parser.py
-    tools/
-      chart.py
-    config.py
-  templates/              # Jinja2 prompt templates
-    roles/                # Role-specific prompts
-    rag/                  # RAG-related prompts
-    research/             # Deep research prompts
-    requirements/         # Requirements generation prompts
-    system/               # System prompts
-  rag_index/              # RAG 与 GraphRAG 索引输出目录（运行后生成）
-  faiss_index/            # Memory 的 FAISS 索引输出目录（运行后生成）
-  reports/                # Deep Research 生成的 PDF 报告（运行后生成）
-  docs/                   # Project documentation
-    graph_construction.md
-    memory_management.md
-    rag_qa.md
-  tests/                  # Test suite
-    test_integration.py
-  requirements.txt
+├── run.py                # 启动入口
+├── api/                  # FastAPI 后端
+│   ├── main.py
+│   ├── session.py
+│   └── routes/           # API 路由（chat, documents, research, srs, stats）
+├── frontend/             # React 前端（TypeScript + TailwindCSS）
+│   ├── src/
+│   ├── package.json
+│   └── vite.config.ts
+├── src/                  # 核心业务逻辑
+│   ├── config.py
+│   ├── core/             # Orchestrator（意图识别与路由）
+│   ├── memory/           # 对话记忆与 Mem0 适配
+│   ├── requirements/     # 需求生成与质量评估
+│   ├── research/         # Deep Research 工作流
+│   ├── rag/              # RAG/GraphRAG（索引、检索、解析、Neo4j）
+│   ├── tools/            # Mermaid 图表工具
+│   ├── integrations/     # LangFuse 等外部集成
+│   └── utils/            # 日志、异常等工具
+├── templates/            # Jinja2 prompt 模板
+│   ├── roles/            # 角色提示词
+│   ├── rag/              # RAG 相关提示词
+│   ├── research/         # Deep Research 提示词
+│   ├── requirements/     # 需求生成提示词
+│   └── system/           # 系统提示词
+├── docs/                 # 项目文档
+├── tests/                # 测试
+├── rag_index/            # RAG 索引输出（运行后生成）
+├── faiss_index/          # FAISS 索引输出（运行后生成）
+├── reports/              # 研究报告输出（运行后生成）
+├── mem0_storage/         # Mem0 本地存储（运行后生成）
+└── requirements.txt
 ```
 
 
 ## 环境与依赖
 - Python 3.10+（建议）
+- Node.js 18+（前端）
 - 主要依赖见 `requirements.txt`
-  - `streamlit`, `langchain`, `langgraph`, `faiss-cpu`
+  - `fastapi`, `uvicorn`, `langchain`, `langgraph`, `faiss-cpu`
   - 可选：`docling`（更强的文档解析能力）
 
 ## 快速开始
 
 ### 1) 安装依赖
 ```bash
+# Python 后端依赖
 pip install -r requirements.txt
+
+# 前端依赖
+cd frontend
+npm install
 ```
 
 ### 2) 配置环境变量
@@ -159,11 +144,35 @@ NEO4J_ENABLED=true
 如果不配置 Neo4j，系统将自动使用 JSON 文件存储图谱。
 
 ### 3) 启动应用
+
+#### 开发模式（推荐）
+
+需要两个终端：
+
+**终端 1 - 启动后端 API：**
 ```bash
-streamlit run app.py
+python run.py
 ```
 
-打开浏览器后即可使用。
+**终端 2 - 启动前端开发服务器：**
+```bash
+cd frontend
+npm run dev
+```
+
+然后访问：http://localhost:5173
+
+#### 生产模式
+
+先构建前端，再启动后端（会自动托管前端静态文件）：
+```bash
+cd frontend && npm run build && cd ..
+python run.py
+```
+
+访问：http://localhost:8000
+
+启动后可访问 http://localhost:8000/docs 查看 Swagger API 文档。
 
 ## 使用指南
 
@@ -195,4 +204,4 @@ streamlit run app.py
 - **Neo4j 连接失败**：检查 Neo4j 服务是否启动，以及 `.env` 中的连接信息是否正确；系统会自动回退到 JSON 存储
 
 ## 许可证
-如果你准备开源发布，请在此补充许可证（如 MIT/Apache-2.0）。
+MIT License

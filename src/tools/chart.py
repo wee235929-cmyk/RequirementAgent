@@ -30,6 +30,7 @@ Instructions:
 2. Map out the sequence of interactions
 3. Include key decision points and alternative flows
 4. Use proper Mermaid sequence diagram syntax
+5. CRITICAL: ALL text in the diagram (participant names, messages, notes) MUST be in the SAME language as the requirements. If requirements are in Chinese, use Chinese. If in English, use English. Do NOT mix languages - be consistent throughout.
 
 Output ONLY the Mermaid code block, no explanations. Start with ```mermaid and end with ```."""
 
@@ -42,7 +43,8 @@ Instructions:
 1. Identify the main processes and decision points
 2. Map out the flow from start to end
 3. Include conditional branches where applicable
-4. Use proper Mermaid flowchart syntax (graph TD or graph LR)
+4. Use proper Mermaid flowchart syntax (flowchart TD or flowchart LR)
+5. CRITICAL: ALL text in the diagram (node labels, edge labels, titles) MUST be in the SAME language as the requirements. If requirements are in Chinese, use Chinese. If in English, use English. Do NOT mix languages - be consistent throughout.
 
 Output ONLY the Mermaid code block, no explanations. Start with ```mermaid and end with ```."""
 
@@ -56,6 +58,7 @@ Instructions:
 2. Define their attributes and methods
 3. Show relationships between classes
 4. Use proper Mermaid class diagram syntax
+5. CRITICAL: ALL text in the diagram (class names, attributes, methods, relationships) MUST be in the SAME language as the requirements. If requirements are in Chinese, use Chinese. If in English, use English. Do NOT mix languages - be consistent throughout.
 
 Output ONLY the Mermaid code block, no explanations. Start with ```mermaid and end with ```."""
 
@@ -69,6 +72,7 @@ Instructions:
 2. Define their attributes
 3. Show relationships with cardinality
 4. Use proper Mermaid ER diagram syntax
+5. CRITICAL: ALL text in the diagram (entity names, attribute names, relationship labels) MUST be in the SAME language as the requirements. If requirements are in Chinese, use Chinese. If in English, use English. Do NOT mix languages - be consistent throughout.
 
 Output ONLY the Mermaid code block, no explanations. Start with ```mermaid and end with ```."""
 
@@ -113,7 +117,7 @@ class MermaidChartTool:
         prompt_template = self.DIAGRAM_TYPES[diagram_type]
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert at creating Mermaid diagrams. Generate clean, valid Mermaid syntax."),
+            ("system", "You are an expert at creating Mermaid diagrams. Generate clean, valid Mermaid syntax. IMPORTANT: Always use English for ALL text in diagrams (labels, titles, names, descriptions). Never use Chinese or other CJK characters as they cause rendering failures."),
             ("human", prompt_template)
         ])
         

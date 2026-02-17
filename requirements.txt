@@ -26,6 +26,9 @@ mem0ai>=0.1.0
 chromadb>=0.4.0
 requests>=2.31.0
 langfuse>=2.0.0
+playwright>=1.40.0
+matplotlib>=3.7.0
+latex2mathml>=3.0.0
 # FastAPI Backend
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0

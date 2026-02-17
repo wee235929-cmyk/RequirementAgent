@@ -12,15 +12,7 @@ ANALYSIS TASKS:
 5. **Language Detection** - Detect the user's language for output formatting
 
 OUTPUT FORMAT (strict JSON):
-{
-  "original_query": "the user's original query verbatim",
-  "detected_language": "language code, e.g. zh, en, ja, ko",
-  "intent": "brief description of research intent",
-  "key_concepts": ["concept1", "concept2", "concept3"],
-  "expanded_query": "A comprehensive, enriched version of the original query (2-4 sentences) that incorporates extracted concepts, clarifies scope, and adds relevant dimensions. Written in English for optimal downstream search performance.",
-  "search_dimensions": ["dimension1", "dimension2", "dimension3"],
-  "suggested_focus_areas": ["area1", "area2", "area3"]
-}
+{% raw %}{{"original_query": "the user's original query verbatim", "detected_language": "language code, e.g. zh, en, ja, ko", "intent": "brief description of research intent", "key_concepts": ["concept1", "concept2", "concept3"], "expanded_query": "A comprehensive, enriched version of the original query (2-4 sentences) that incorporates extracted concepts, clarifies scope, and adds relevant dimensions. Written in English for optimal downstream search performance.", "search_dimensions": ["dimension1", "dimension2", "dimension3"], "suggested_focus_areas": ["area1", "area2", "area3"]}}{% endraw %}
 
 RULES:
 - The "expanded_query" MUST be in English regardless of the user's input language, because it will be used for web search.

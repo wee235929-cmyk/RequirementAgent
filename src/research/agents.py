@@ -519,10 +519,15 @@ class SubSearchAgent:
                 f'{task["task"]} research paper PDF filetype:pdf'
             ]
             
+            # 添加延迟以减少限流
+            import time
+            time.sleep(0.3)
+            
             for aq in academic_queries[:2]:
                 try:
                     academic_results = list(ddgs.text(aq, max_results=3))
                     all_results.extend(academic_results)
+                    time.sleep(0.2)  # 每次搜索后短暂延迟
                 except Exception:
                     pass
             
@@ -533,10 +538,13 @@ class SubSearchAgent:
                 f'{task["task"]} site:github.com README OR documentation'
             ]
             
+            time.sleep(0.3)  # 延迟以减少限流
+            
             for dq in doc_queries[:2]:
                 try:
                     doc_results = list(ddgs.text(dq, max_results=3))
                     all_results.extend(doc_results)
+                    time.sleep(0.2)
                 except Exception:
                     pass
             
@@ -735,7 +743,7 @@ class SearcherAgent:
         logger.info(f"SearcherAgent: Starting parallel execution of {len(tasks)} tasks with {self.num_parallel} workers")
         
         with ThreadPoolExecutor(max_workers=self.num_parallel) as executor:
-            # 提交所有任务到线程池
+            # 提交所有任务到线程池，添加延迟以减少限流
             future_to_task = {}
             for idx, task in enumerate(tasks):
                 # 轮询分配子代理
@@ -750,6 +758,10 @@ class SearcherAgent:
                     original_query
                 )
                 future_to_task[future] = idx
+                # 添加小延迟以减少搜索引擎限流（每批任务间隔 0.5 秒）
+                if (idx + 1) % self.num_parallel == 0 and idx < len(tasks) - 1:
+                    import time
+                    time.sleep(0.5)
             
             # 收集结果（按完成顺序）
             for future in as_completed(future_to_task):
@@ -890,14 +902,23 @@ class WriterAgent:
         ("challenges", "7. Challenges and Solutions", "Write 2000-2500 words discussing challenges and solutions in flowing paragraphs. Include a ```mermaid flowchart LR``` showing challenge-solution mappings."),
         ("future_outlook", "8. Future Outlook", "Write 1500-2000 words on trends and predictions in narrative style. Include a ```mermaid gantt``` chart for projected timeline/roadmap."),
         ("conclusions", "9. Conclusions", "Write 800-1000 words summarizing findings and recommendations in paragraphs. NO bullet points."),
-        ("references", "References", """Format ALL references in standard academic citation style (APA/IEEE). Use numbered format:
+        ("references", "References", """Format ALL references in standard APA 7th edition style. Use numbered format with CONSISTENT formatting:
 
 [1] Author, A. A., & Author, B. B. (Year). Title of article. *Journal Name*, Volume(Issue), pages. https://doi.org/xxx
 [2] Author, C. C. (Year). *Title of book*. Publisher.
-[3] Organization Name. (Year). Report title. Retrieved from https://url
+[3] Organization Name. (Year). *Report title*. https://url
 [4] Author, D. D. (Year, Month Day). Article title. *Website Name*. https://url
 
-IMPORTANT: Every [Author, Year] citation in the text MUST have a numbered entry here. Do NOT use paragraph format - use numbered list format.
+CRITICAL FORMATTING RULES:
+1. Each reference MUST be on a single line - NO line breaks within a reference
+2. NO extra spaces between words - use exactly ONE space between elements
+3. URL must immediately follow the period with ONE space, e.g., "...title. https://url"
+4. Do NOT use "Retrieved from" - just put the URL directly after the title
+5. If no author, use website/organization name as author
+6. If no date, use (n.d.) for "no date"
+7. Keep all entries compact - no paragraph breaks between references
+
+IMPORTANT: Reference numbers MUST match the citation numbers used in the report text. If [1] is cited in the text, [1] here must be that exact source.
 IMPORTANT: Do NOT translate any reference entries. Keep all author names, titles, journal names, and URLs in their ORIGINAL language.""")
     ]
     
@@ -932,20 +953,55 @@ CRITICAL WRITING STYLE:
 - Tables should be rare - only include if data truly requires tabular format
 
 CITATION REQUIREMENTS:
-- Include inline citations [Author, Year] for all factual claims
-- Every citation must correspond to a source in the research findings
+- Use NUMBERED citations [1], [2], [3] etc. for all factual claims
+- Each number MUST correspond to the same numbered entry in the References section
+- Assign citation numbers in order of first appearance in the text
+- The same source should use the same number throughout the report
+- Example: "Recent studies [1] show that... This aligns with findings from [2]..."
 
-MERMAID DIAGRAMS (include 1-2 per section, use DIVERSE types):
-Use ```mermaid code blocks with CORRECT syntax:
-- flowchart TD/LR: Process flows, decision trees, architectures
-- sequenceDiagram: Component interactions, API flows
-- classDiagram: Object relationships, data models
-- stateDiagram-v2: State machines, lifecycle stages
-- erDiagram: Entity relationships, database schemas
-- pie: Market share, distributions
-- gantt: Timelines, roadmaps
-- mindmap: Concept hierarchies
-- timeline: Historical events, milestones
+VISUAL ELEMENTS (diagrams, tables, web screenshots):
+1. MERMAID DIAGRAMS: Include 2-4 diagrams per section. You may use multiple diagrams of the same type if needed, but limit each type to MAX 2 per report.
+   Available types (choose the most appropriate for your content):
+   
+   CORE DIAGRAMS:
+   - flowchart TD/LR: Process flows, decision trees, system architectures, workflows, algorithms
+   - sequenceDiagram: Component interactions, API calls, protocol flows, authentication sequences
+   - classDiagram: Object relationships, class hierarchies, data models, system components
+   - stateDiagram-v2: State machines, lifecycle stages, status transitions, workflow states
+   - erDiagram: Entity relationships, database schemas, data modeling
+   - gantt: Project timelines, roadmaps, sprint planning, release schedules
+   
+   DATA VISUALIZATION:
+   - pie: Market share, budget allocation, survey results, proportional data
+   - xychart-beta: Line/bar charts for trends, performance metrics, comparative data (use only if necessary)
+   - quadrantChart: Priority matrices, risk assessment, portfolio analysis, positioning
+   - sankey-beta: Flow quantities, resource allocation, process throughput (use only if necessary)
+   
+   CONCEPTUAL & HIERARCHICAL:
+   - mindmap: Concept maps, topic hierarchies, brainstorming, knowledge organization
+   - timeline: Historical events, milestones, evolution, chronological sequences
+   - journey: User experience mapping, customer journeys, service blueprinting
+   
+   TECHNICAL & ARCHITECTURE:
+   - gitGraph: Version control branching, release strategies, Git workflows
+   - C4Context/C4Container/C4Component: Software architecture at different abstraction levels
+   - architecture-beta: Cloud architectures, microservice topologies, infrastructure diagrams (use only if necessary)
+   - requirementDiagram: Requirements traceability, system requirements
+   - packet-beta: Network packet structures, protocol headers (use only if necessary)
+   - block-beta: Block-based hierarchical structures, system blocks (use only if necessary)
+
+2. WEB SCREENSHOTS: When research sources contain useful visual data (charts, graphs, infographics, data tables, product screenshots), you SHOULD include them to enrich the report. Use:
+   [WEB_SCREENSHOT: image_url | description]
+   Example: [WEB_SCREENSHOT: https://example.com/chart.png | Market share comparison 2024]
+   IMPORTANT: Actively look for image URLs in the research findings (look for .png, .jpg, .gif, .webp, or image hosting URLs). Include 2-4 relevant screenshots per major section to make the report more visually informative.
+
+3. TABLES: Use [TABLE: title | col1, col2, col3 | row1data | row2data] format for data comparisons.
+
+4. CRITICAL - IN-TEXT REFERENCES: Every diagram, table, and screenshot MUST be referenced in the text BEFORE it appears.
+   - For diagrams: "As shown in Figure X below, the process flow..."
+   - For tables: "Table X summarizes the key differences..."
+   - For screenshots: "The data visualization from [source] (see Figure X) illustrates..."
+   Number figures sequentially (Figure 1, Figure 2, etc.) and tables separately (Table 1, Table 2, etc.)
 
 MERMAID SYNTAX RULES (CRITICAL - follow EXACTLY or diagram will fail):
 - Use ONLY simple ASCII alphanumeric text in node labels. NO special characters: no (), no "", no :, no ;, no &, no %, no #
@@ -954,13 +1010,20 @@ MERMAID SYNTAX RULES (CRITICAL - follow EXACTLY or diagram will fail):
 - Use <br/> for line breaks (NEVER <br> without closing slash)
 - Use --> for arrows (NEVER -> in flowchart)
 - Edge labels: A -->|label| B (no special chars in label)
+- NEVER use edge labels like -->[label] or --> (label) or -->/label/. Always use -->|label|.
 - For flowchart: start with "flowchart TD" or "flowchart LR" (not "graph")
 - For sequenceDiagram: participant names must be single words, use "participant A as Long Name"
 - For pie: "Label" : number (quotes around label)
 - For stateDiagram-v2: state names must be single words, use [*] for start/end
 - NEVER use HTML tags except <br/>
 - NEVER use markdown formatting inside Mermaid code
-- IMPORTANT: ALL text inside Mermaid diagrams MUST be in English, regardless of the report language. Chinese/CJK characters will cause rendering failures. Translate all labels, titles, axis names to English inside Mermaid code blocks
+- IMPORTANT: ALL text inside Mermaid diagrams MUST be in the SAME language as the user's query. If the query is in Chinese, use Chinese for all labels. If in English, use English. Do NOT mix languages within a single diagram - be consistent throughout.
+
+REFERENCES RULE (CRITICAL):
+- Do NOT include a "References" or "参考文献" section in ANY chapter except the dedicated References section.
+- Only use inline citations like [1], [2], [3] in the body text.
+- The full reference list will ONLY appear in the final "References" section of the report.
+- If you are writing any section OTHER than "References", do NOT add a references list at the end.
 
 FORMAT:
 - Use ## for section header, ### for subsections
