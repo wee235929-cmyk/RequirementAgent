@@ -18,7 +18,7 @@ Deep Research 是 RequirementAgent 项目的核心功能之一，能够针对用
 
 **报告首页与正文：**
 
-![报告一 - 首页与正文](../report1_a.png)
+![报告一 - 首页与正文](./report1_a.png)
 
 - 标题：*Deep Research: Create comprehensive, in-depth study notes for the Diamond Sutra*
 - 包含执行摘要、历史与哲学基础、核心教义分析等章节
@@ -27,7 +27,7 @@ Deep Research 是 RequirementAgent 项目的核心功能之一，能够针对用
 
 **参考文献：**
 
-![报告一 - 参考文献](../report1_b.png)
+![报告一 - 参考文献](./report1_b.png)
 
 - 共 22 条参考文献，涵盖 Wikipedia、学术期刊（Springer、JSTOR）、Stanford 大学资源等
 - 采用 APA 格式规范引用
@@ -40,7 +40,7 @@ Deep Research 是 RequirementAgent 项目的核心功能之一，能够针对用
 
 **报告首页与正文：**
 
-![报告二 - 首页与正文](../report2_a.png)
+![报告二 - 首页与正文](./report2_a.png)
 
 - 标题：*深度研究：需求工程最新的工具技术发展情况，标准概况等*
 - 包含需求工程流程图（Mermaid 图表自动生成）
@@ -49,7 +49,7 @@ Deep Research 是 RequirementAgent 项目的核心功能之一，能够针对用
 
 **结论与参考文献：**
 
-![报告二 - 结论与参考文献](../report2_b.png)
+![报告二 - 结论与参考文献](./report2_b.png)
 
 - 包含 AI 时代需求管理工具演进概念图
 - 共 12 条参考文献，涵盖 Wikipedia、arXiv、学术期刊、技术博客等
